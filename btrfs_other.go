@@ -178,3 +178,66 @@ func BalanceCancel(path string) error { return ErrUnsupported }
 
 // BalancePause is unsupported off Linux.
 func BalancePause(path string) error { return ErrUnsupported }
+
+// QuotaEnable is unsupported off Linux.
+func QuotaEnable(path string) error { return ErrUnsupported }
+
+// QuotaDisable is unsupported off Linux.
+func QuotaDisable(path string) error { return ErrUnsupported }
+
+// QgroupCreate is unsupported off Linux.
+func QgroupCreate(path string, qgroupid uint64) error { return ErrUnsupported }
+
+// QgroupDestroy is unsupported off Linux.
+func QgroupDestroy(path string, qgroupid uint64) error { return ErrUnsupported }
+
+// QgroupAssign is unsupported off Linux.
+func QgroupAssign(path string, src, dst uint64) error { return ErrUnsupported }
+
+// QgroupRemove is unsupported off Linux.
+func QgroupRemove(path string, src, dst uint64) error { return ErrUnsupported }
+
+// QgroupLimits is the set of limits applied by QgroupLimit.
+type QgroupLimits struct {
+	Flags   uint64
+	MaxRfer uint64
+	MaxExcl uint64
+	RsvRfer uint64
+	RsvExcl uint64
+}
+
+// QgroupLimit is unsupported off Linux.
+func QgroupLimit(path string, qgroupid uint64, lim QgroupLimits) error { return ErrUnsupported }
+
+// Qgroup is one entry returned by ListQgroups.
+type Qgroup struct {
+	ID       uint64
+	Level    uint64
+	SubvolID uint64
+	Rfer     uint64
+	Excl     uint64
+	MaxRfer  uint64
+	MaxExcl  uint64
+	LimFlags uint64
+}
+
+// HasLimit reports whether any usage limit is in force on this qgroup.
+func (q Qgroup) HasLimit() bool { return q.LimFlags != 0 }
+
+// ListQgroups is unsupported off Linux.
+func ListQgroups(path string) ([]Qgroup, error) { return nil, ErrUnsupported }
+
+// Defrag is unsupported off Linux.
+func Defrag(path string) error { return ErrUnsupported }
+
+// DefragRangeOptions controls a ranged defragmentation issued by DefragRange.
+type DefragRangeOptions struct {
+	Start        uint64
+	Len          uint64
+	Flags        uint64
+	ExtentThresh uint32
+	CompressType uint32
+}
+
+// DefragRange is unsupported off Linux.
+func DefragRange(path string, opts DefragRangeOptions) error { return ErrUnsupported }
