@@ -63,6 +63,18 @@ bp, err := btrfs.BalanceStart(mnt, btrfs.BalanceArgs{}) // full balance, synchro
 // e.g. the `-dusage=50` equivalent (relocate data chunks below 50% full):
 //   btrfs.BalanceStart(mnt, btrfs.BalanceArgs{
 //       Data: &btrfs.BalanceFilter{Flags: btrfs.BalanceArgsUsage, Usage: 50}})
+
+// Quotas / qgroups:           BTRFS_IOC_QUOTA_CTL / QGROUP_CREATE / ASSIGN / LIMIT
+err = btrfs.QuotaEnable(mnt)                  // or QuotaDisable(mnt)
+err = btrfs.QgroupCreate(mnt, 1<<48|100)      // higher-level qgroup 1/100; QgroupDestroy to remove
+err = btrfs.QgroupAssign(mnt, 0<<48|256, 1<<48|100) // QgroupRemove to undo
+err = btrfs.QgroupLimit(mnt, 0<<48|256,       // cap referenced bytes (writes past it -> EDQUOT)
+    btrfs.QgroupLimits{Flags: btrfs.QgroupLimitMaxRfer, MaxRfer: 16 << 20})
+qgs, err := btrfs.ListQgroups(mnt)            // []Qgroup{ID, Level, SubvolID, Rfer, Excl, MaxRfer, ...}
+
+// Defragment:                 BTRFS_IOC_DEFRAG / DEFRAG_RANGE
+err = btrfs.Defrag(mnt + "/file")             // whole file (or a directory's b-tree)
+err = btrfs.DefragRange(mnt+"/file", btrfs.DefragRangeOptions{}) // zero-value = whole file
 ```
 
 `Available(path)` reports whether `path` is on a mounted btrfs filesystem
@@ -89,6 +101,13 @@ bp, err := btrfs.BalanceStart(mnt, btrfs.BalanceArgs{}) // full balance, synchro
 | Scrub cancel             | `BTRFS_IOC_SCRUB_CANCEL`    | (none)                          |
 | Balance start / progress | `BTRFS_IOC_BALANCE_V2` / `BALANCE_PROGRESS` | `btrfs_ioctl_balance_args` |
 | Balance pause / cancel   | `BTRFS_IOC_BALANCE_CTL`     | `int`                           |
+| Quota enable / disable   | `BTRFS_IOC_QUOTA_CTL`       | `btrfs_ioctl_quota_ctl_args`    |
+| Qgroup create / destroy  | `BTRFS_IOC_QGROUP_CREATE`   | `btrfs_ioctl_qgroup_create_args` |
+| Qgroup assign / remove   | `BTRFS_IOC_QGROUP_ASSIGN`   | `btrfs_ioctl_qgroup_assign_args` |
+| Qgroup limit             | `BTRFS_IOC_QGROUP_LIMIT`    | `btrfs_ioctl_qgroup_limit_args` |
+| List qgroups             | `BTRFS_IOC_TREE_SEARCH_V2`  | over the quota tree (`QGROUP_INFO` + `QGROUP_LIMIT` items) |
+| Defragment file/dir      | `BTRFS_IOC_DEFRAG`          | `btrfs_ioctl_vol_args`          |
+| Defragment byte range    | `BTRFS_IOC_DEFRAG_RANGE`    | `btrfs_ioctl_defrag_range_args` |
 
 ### Subvolume listing
 
@@ -100,6 +119,16 @@ name) carries the child's name. `Path` is resolved by chaining names up to the
 top-level (id 5) subvolume. It prefers `BTRFS_IOC_TREE_SEARCH_V2` (256 KiB
 result buffer) and falls back to `BTRFS_IOC_TREE_SEARCH` on kernels without V2.
 The root tree is privileged, so listing generally requires root.
+
+### Qgroup listing
+
+`ListQgroups` walks the quota tree (`BTRFS_QUOTA_TREE_OBJECTID`) with the same
+`TREE_SEARCH(_V2)` helper as `ListSubvolumes`, collecting `QGROUP_INFO` items
+(referenced/exclusive byte usage) and `QGROUP_LIMIT` items (limit flags and
+`max_rfer`/`max_excl`), keyed by qgroup id (the item `offset`). Each `Qgroup`
+decodes the id into its `Level` (`id >> 48`) and `SubvolID` (`id & ((1<<48)-1)`)
+components. Quotas must be enabled or the quota tree does not exist (the kernel
+returns `ENOENT`). Like the root-tree walk it is privileged.
 
 ### Scrub and balance are synchronous
 
@@ -125,10 +154,18 @@ kernel's `ENOTCONN` when nothing is running.
   `..._scrub_args`, `..._balance_args`) mirrored and their sizes/offsets pinned
   in `abi_admin_test.go` against a C `offsetof`/`sizeof` probe over the live
   6.12 `linux/btrfs.h`.
+- **`abi_quota.go`** — same treatment for the quota/qgroup/defrag ioctls:
+  numbers recomputed from the encoding, structs (`btrfs_ioctl_quota_ctl_args`,
+  `..._qgroup_create_args`, `..._qgroup_assign_args`, `..._qgroup_limit_args`,
+  `..._defrag_range_args`) mirrored and their sizes/offsets pinned in
+  `abi_quota_test.go` against the same C probe over the live 6.12 headers.
 - **`btrfs_linux.go`** — opens the target directory, issues the ioctl on its
   fd, and (de)serializes the struct. The `btrfs` CLI is never invoked.
-- **`btrfs_admin_linux.go`** — the admin operations: the root-tree walk for
-  `ListSubvolumes` and the device/scrub/balance wrappers.
+- **`btrfs_admin_linux.go`** — the admin operations: the generic tree-search
+  walk (shared by `ListSubvolumes` and `ListQgroups`) and the
+  device/scrub/balance wrappers.
+- **`btrfs_quota_linux.go`** — the quota/qgroup management, the quota-tree walk
+  for `ListQgroups`, and the defrag wrappers.
 - **`btrfs_other.go`** — non-Linux stub returning `ErrUnsupported`.
 
 ## Two read-only flag namespaces

@@ -142,16 +142,27 @@ func joinParts(parts []string) string {
 // body. It iterates in batches, advancing the search range past the last item
 // each round until the kernel returns fewer items than requested.
 func searchRootTree(fd uintptr, keyType uint32, fn func(*btrfsIoctlSearchHeader, []byte) error) error {
+	return searchTreeTypeRange(fd, btrfsRootTreeObjectID, keyType, keyType, fn)
+}
+
+// searchTreeTypeRange issues TREE_SEARCH(_V2) over an arbitrary tree (treeID)
+// filtering for items whose key type lies in [minType, maxType], calling fn for
+// each with its header and body. It is the generalisation of searchRootTree
+// used by both the subvolume listing (root tree, ROOT_REF) and the qgroup
+// listing (quota tree, QGROUP_INFO/QGROUP_LIMIT). It iterates in batches,
+// advancing the search range past the last item each round until the kernel
+// returns fewer items than requested.
+func searchTreeTypeRange(fd uintptr, treeID uint64, minType, maxType uint32, fn func(*btrfsIoctlSearchHeader, []byte) error) error {
 	key := btrfsIoctlSearchKey{
-		TreeID:      btrfsRootTreeObjectID,
+		TreeID:      treeID,
 		MinObjectid: 0,
 		MaxObjectid: ^uint64(0),
 		MinOffset:   0,
 		MaxOffset:   ^uint64(0),
 		MinTransid:  0,
 		MaxTransid:  ^uint64(0),
-		MinType:     keyType,
-		MaxType:     keyType,
+		MinType:     minType,
+		MaxType:     maxType,
 	}
 
 	for {
