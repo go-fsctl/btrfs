@@ -75,6 +75,16 @@ qgs, err := btrfs.ListQgroups(mnt)            // []Qgroup{ID, Level, SubvolID, R
 // Defragment:                 BTRFS_IOC_DEFRAG / DEFRAG_RANGE
 err = btrfs.Defrag(mnt + "/file")             // whole file (or a directory's b-tree)
 err = btrfs.DefragRange(mnt+"/file", btrfs.DefragRangeOptions{}) // zero-value = whole file
+
+// Send a stream:              BTRFS_IOC_SEND
+snap, _ := os.Open(mnt + "/snap_ro")          // a READ-ONLY snapshot (send requires RO)
+err = btrfs.Send(int(snap.Fd()), w, btrfs.SendOpts{})            // full send -> io.Writer
+err = btrfs.Send(int(snap.Fd()), w, btrfs.SendOpts{ParentRoot: parentID}) // incremental delta
+err = btrfs.Send(int(snap.Fd()), w, btrfs.SendOpts{NoData: true})         // metadata-only
+// Mark a received subvolume (the interop primitive `btrfs receive` uses):
+res, err := btrfs.SetReceivedSubvol(fd, uuid, ctransid, btrfs.SetReceivedTimes{})
+// Introspect a stream (any platform, no kernel calls):
+h, n, err := btrfs.VerifyStream(r)            // Header{Magic, Version} + record count
 ```
 
 `Available(path)` reports whether `path` is on a mounted btrfs filesystem
@@ -108,6 +118,8 @@ err = btrfs.DefragRange(mnt+"/file", btrfs.DefragRangeOptions{}) // zero-value =
 | List qgroups             | `BTRFS_IOC_TREE_SEARCH_V2`  | over the quota tree (`QGROUP_INFO` + `QGROUP_LIMIT` items) |
 | Defragment file/dir      | `BTRFS_IOC_DEFRAG`          | `btrfs_ioctl_vol_args`          |
 | Defragment byte range    | `BTRFS_IOC_DEFRAG_RANGE`    | `btrfs_ioctl_defrag_range_args` |
+| Send stream (full/incr.) | `BTRFS_IOC_SEND`            | `btrfs_ioctl_send_args`         |
+| Mark received subvolume  | `BTRFS_IOC_SET_RECEIVED_SUBVOL` | `btrfs_ioctl_received_subvol_args` |
 
 ### Subvolume listing
 
@@ -138,6 +150,47 @@ final progress. To poll an in-flight operation, start it from one goroutine and
 call `ScrubProgressFor`/`BalanceProgressFor` from another; these return the
 kernel's `ENOTCONN` when nothing is running.
 
+### Send streams
+
+`Send` drives `BTRFS_IOC_SEND` to generate a btrfs send stream for a
+**read-only** subvolume (the kernel refuses to send a writable one — snapshot it
+read-only first) and writes it to any `io.Writer`. Internally it creates a pipe,
+hands the write end to the ioctl as `send_fd`, runs the ioctl in a goroutine,
+and drains the read end into the writer, so arbitrarily large streams flow
+without buffering. `SendOpts` selects:
+
+- **full** send — the zero value (`ParentRoot == 0`);
+- **incremental** send — set `ParentRoot` to a parent snapshot's root id (from
+  `SubvolID`) and the kernel emits only the delta;
+- **clone sources** — `CloneSources` lists root ids the kernel may reference
+  instead of re-sending identical extents;
+- **metadata-only** — `NoData` sets `BTRFS_SEND_FLAG_NO_FILE_DATA`.
+
+`SetReceivedSubvol` drives `BTRFS_IOC_SET_RECEIVED_SUBVOL`, the ioctl `btrfs
+receive` issues last on each subvolume it materialises to stamp it with the
+sender's UUID and send transid; this is what lets a received subvolume be found
+as the parent of a later incremental receive, and is the interop primitive that
+makes our send/receive story round-trip with the real tool.
+
+The stream wire format (`btrfs_stream_header` + a sequence of TLV
+`btrfs_cmd_header` records) is parsed by `ParseHeader`, `CommandReader`, and
+`VerifyStream` in `send_stream.go`. That parser is pure byte handling with no
+kernel calls, so it builds and is unit-tested on every platform; callers use it
+to sanity-check a stream's magic/version and walk its records.
+
+Validation on a 6.12 kernel cross-checked our streams against the real
+`btrfs receive`: a full send and an incremental send (`ParentRoot` = a received
+parent) each applied cleanly, and every received file's sha256 matched the
+source. `NoData` produced a valid stream three orders of magnitude smaller than
+the full one for a 4 MiB file.
+
+**Deferred:** *receive-apply* — replaying a stream to recreate the subvolume
+tree — is a large userspace state machine (per-command file/dir/extent
+operations) and is intentionally out of scope here. The pieces shipped (full +
+incremental `Send`, `SetReceivedSubvol`, and stream parsing) are the producer
+side plus the `SET_RECEIVED_SUBVOL` primitive a future receiver will need; a
+native receive-apply is the planned follow-up.
+
 ## How it works
 
 - **`abi.go`** — the `BTRFS_IOC_*` numbers are recomputed in Go from the
@@ -166,6 +219,15 @@ kernel's `ENOTCONN` when nothing is running.
   device/scrub/balance wrappers.
 - **`btrfs_quota_linux.go`** — the quota/qgroup management, the quota-tree walk
   for `ListQgroups`, and the defrag wrappers.
+- **`abi_send.go`** — same treatment for the send / set-received ioctls: numbers
+  recomputed from the encoding, structs (`btrfs_ioctl_send_args`,
+  `..._received_subvol_args`) and the on-stream framing constants mirrored and
+  pinned in `abi_send_test.go` against the same C probe over the live 6.12
+  headers.
+- **`btrfs_send_linux.go`** — `Send` (pipe + goroutine draining the ioctl) and
+  `SetReceivedSubvol`.
+- **`send_stream.go`** — the platform-independent send-stream parser
+  (`ParseHeader`, `CommandReader`, `VerifyStream`), built and tested everywhere.
 - **`btrfs_other.go`** — non-Linux stub returning `ErrUnsupported`.
 
 ## Two read-only flag namespaces

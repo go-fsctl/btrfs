@@ -10,7 +10,10 @@
 // abi.go remain available everywhere for testing and tooling.
 package btrfs
 
-import "errors"
+import (
+	"errors"
+	goio "io"
+)
 
 // ErrUnsupported is returned by all kernel operations on non-Linux platforms.
 var ErrUnsupported = errors.New("btrfs: BTRFS_IOC_* ioctls are only supported on Linux")
@@ -241,3 +244,37 @@ type DefragRangeOptions struct {
 
 // DefragRange is unsupported off Linux.
 func DefragRange(path string, opts DefragRangeOptions) error { return ErrUnsupported }
+
+// SendOpts controls a Send. The zero value performs a full send.
+type SendOpts struct {
+	ParentRoot   uint64
+	CloneSources []uint64
+	NoData       bool
+}
+
+// Send is unsupported off Linux. (Stream parsing in send_stream.go works
+// everywhere; only the kernel BTRFS_IOC_SEND ioctl is Linux-only.)
+func Send(subvolFd int, w goio.Writer, opts SendOpts) error { return ErrUnsupported }
+
+// ReceivedTimespec mirrors struct btrfs_ioctl_timespec.
+type ReceivedTimespec struct {
+	Sec  uint64
+	Nsec uint32
+}
+
+// SetReceivedTimes carries the send/receive timestamps for SetReceivedSubvol.
+type SetReceivedTimes struct {
+	Stime ReceivedTimespec
+	Rtime ReceivedTimespec
+}
+
+// SetReceivedResult is the kernel's reply from SET_RECEIVED_SUBVOL.
+type SetReceivedResult struct {
+	Rtransid uint64
+	Rtime    ReceivedTimespec
+}
+
+// SetReceivedSubvol is unsupported off Linux.
+func SetReceivedSubvol(fd int, uuid [16]byte, ctransid uint64, times SetReceivedTimes) (SetReceivedResult, error) {
+	return SetReceivedResult{}, ErrUnsupported
+}
