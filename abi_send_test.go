@@ -93,7 +93,7 @@ func TestSendConstants(t *testing.T) {
 		{"btrfsSendStreamVersion", btrfsSendStreamVersion, 1},
 		{"btrfsStreamHeaderSize", btrfsStreamHeaderSize, 17},
 		{"btrfsCmdHeaderSize", btrfsCmdHeaderSize, 10},
-		{"btrfsSendCmdEnd", btrfsSendCmdEnd, 20},
+		{"btrfsSendCmdEnd", btrfsSendCmdEnd, 21},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)

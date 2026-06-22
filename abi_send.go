@@ -106,7 +106,7 @@ const (
 	btrfsSendCmdUnspec   = 0  // BTRFS_SEND_C_UNSPEC
 	btrfsSendCmdSubvol   = 1  // BTRFS_SEND_C_SUBVOL
 	btrfsSendCmdSnapshot = 2  // BTRFS_SEND_C_SNAPSHOT
-	btrfsSendCmdEnd      = 20 // BTRFS_SEND_C_END (stream terminator in v1)
+	btrfsSendCmdEnd      = 21 // BTRFS_SEND_C_END (stream terminator in v1)
 )
 
 // BTRFS_IOC_* request numbers for send / set-received, derived from
