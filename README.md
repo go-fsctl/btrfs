@@ -1,5 +1,8 @@
 # go-fsctl/btrfs
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-fsctl/btrfs.svg)](https://pkg.go.dev/github.com/go-fsctl/btrfs)
+[![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
 Pure-Go btrfs kernel control: drive btrfs operations directly via `BTRFS_IOC_*`
 ioctls on directory file descriptors — no cgo, and no shelling out to the
 `btrfs` CLI.
