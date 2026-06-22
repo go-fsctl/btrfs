@@ -294,3 +294,67 @@ type ReceiveOpts struct {
 // TLV attribute decoding in recv_attrs.go work everywhere; only the syscall /
 // ioctl replay is Linux-only.)
 func Receive(destPath string, r goio.Reader, opts ReceiveOpts) error { return ErrUnsupported }
+
+// GetLabel is unsupported off Linux.
+func GetLabel(fd uintptr) (string, error) { return "", ErrUnsupported }
+
+// SetLabel is unsupported off Linux.
+func SetLabel(fd uintptr, label string) error { return ErrUnsupported }
+
+// Resize is unsupported off Linux.
+func Resize(fd uintptr, size string) error { return ErrUnsupported }
+
+// SetDefaultSubvol is unsupported off Linux.
+func SetDefaultSubvol(fd uintptr, subvolid uint64) error { return ErrUnsupported }
+
+// GetDefaultSubvol is unsupported off Linux.
+func GetDefaultSubvol(fd uintptr) (uint64, error) { return 0, ErrUnsupported }
+
+// Features is the decoded set of btrfs feature flags.
+type Features struct {
+	Compat   uint64
+	CompatRO uint64
+	Incompat uint64
+	Names    []string
+}
+
+// SupportedFeatures is the result of GetSupportedFeatures.
+type SupportedFeatures struct {
+	Supported Features
+	SafeSet   Features
+	SafeClear Features
+}
+
+// FeatureChange describes an online feature-flag change for SetFeatures.
+type FeatureChange struct {
+	ClearCompat   uint64
+	SetCompat     uint64
+	ClearCompatRO uint64
+	SetCompatRO   uint64
+	ClearIncompat uint64
+	SetIncompat   uint64
+}
+
+// GetFeatures is unsupported off Linux.
+func GetFeatures(fd uintptr) (Features, error) { return Features{}, ErrUnsupported }
+
+// GetSupportedFeatures is unsupported off Linux.
+func GetSupportedFeatures(fd uintptr) (SupportedFeatures, error) {
+	return SupportedFeatures{}, ErrUnsupported
+}
+
+// SetFeatures is unsupported off Linux.
+func SetFeatures(fd uintptr, change FeatureChange) error { return ErrUnsupported }
+
+// InodeOwner is one (inode, root) pair returned by LogicalToIno.
+type InodeOwner struct {
+	Inode  uint64
+	Offset uint64
+	Root   uint64
+}
+
+// LogicalToIno is unsupported off Linux.
+func LogicalToIno(fd uintptr, logical uint64) ([]InodeOwner, error) { return nil, ErrUnsupported }
+
+// InoToPath is unsupported off Linux.
+func InoToPath(fd uintptr, inode uint64) ([]string, error) { return nil, ErrUnsupported }

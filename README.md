@@ -89,6 +89,30 @@ err = btrfs.Send(int(snap.Fd()), w, btrfs.SendOpts{NoData: true})         // met
 res, err := btrfs.SetReceivedSubvol(fd, uuid, ctransid, btrfs.SetReceivedTimes{})
 // Introspect a stream (any platform, no kernel calls):
 h, n, err := btrfs.VerifyStream(r)            // Header{Magic, Version} + record count
+
+// --- Filesystem-level administration (fd-based; mnt fd or any fd on the fs) ---
+fd := f.Fd()                                  // f, _ := os.Open(mnt)
+
+// Label:                       BTRFS_IOC_GET_FSLABEL / SET_FSLABEL
+lbl, err := btrfs.GetLabel(fd)                // current label (<= 255 bytes)
+err = btrfs.SetLabel(fd, "newlabel")          // online relabel
+
+// Resize:                      BTRFS_IOC_RESIZE
+err = btrfs.Resize(fd, "-256M")               // shrink; also "+1G", "max", "2:+1G"
+err = btrfs.Resize(fd, "max")                 // grow to fill the device
+
+// Default subvolume:           BTRFS_IOC_DEFAULT_SUBVOL (+ root-tree read)
+err = btrfs.SetDefaultSubvol(fd, id)          // id from SubvolID
+def, err := btrfs.GetDefaultSubvol(fd)        // reads the "default" DIR_ITEM (id 5 if unset)
+
+// Features:                    BTRFS_IOC_GET_FEATURES / GET_SUPPORTED_FEATURES / SET_FEATURES
+feat, err := btrfs.GetFeatures(fd)            // Features{Compat, CompatRO, Incompat, Names}
+sup, err := btrfs.GetSupportedFeatures(fd)    // Supported / SafeSet / SafeClear
+err = btrfs.SetFeatures(fd, btrfs.FeatureChange{SetIncompat: btrfs.FeatureIncompatExtendedIref})
+
+// Reverse map (scrub-error reporting): BTRFS_IOC_LOGICAL_INO / INO_PATHS
+owners, err := btrfs.LogicalToIno(fd, logical) // []InodeOwner{Inode, Offset, Root}
+paths, err := btrfs.InoToPath(fd, inode)       // paths relative to the subvolume root
 ```
 
 `Available(path)` reports whether `path` is on a mounted btrfs filesystem
@@ -124,6 +148,15 @@ h, n, err := btrfs.VerifyStream(r)            // Header{Magic, Version} + record
 | Defragment byte range    | `BTRFS_IOC_DEFRAG_RANGE`    | `btrfs_ioctl_defrag_range_args` |
 | Send stream (full/incr.) | `BTRFS_IOC_SEND`            | `btrfs_ioctl_send_args`         |
 | Mark received subvolume  | `BTRFS_IOC_SET_RECEIVED_SUBVOL` | `btrfs_ioctl_received_subvol_args` |
+| Get / set label          | `BTRFS_IOC_GET_FSLABEL` / `SET_FSLABEL` | `char[256]`             |
+| Resize (grow / shrink)   | `BTRFS_IOC_RESIZE`          | `btrfs_ioctl_vol_args`          |
+| Set default subvolume    | `BTRFS_IOC_DEFAULT_SUBVOL`  | `__u64`                         |
+| Get default subvolume    | `BTRFS_IOC_TREE_SEARCH_V2`  | root-tree `DIR_ITEM` ("default") |
+| Get features             | `BTRFS_IOC_GET_FEATURES`    | `btrfs_ioctl_feature_flags`     |
+| Get supported features   | `BTRFS_IOC_GET_SUPPORTED_FEATURES` | `btrfs_ioctl_feature_flags[3]` |
+| Set features (online)    | `BTRFS_IOC_SET_FEATURES`    | `btrfs_ioctl_feature_flags[2]`  |
+| Logical → inode(s)       | `BTRFS_IOC_LOGICAL_INO`     | `btrfs_ioctl_logical_ino_args`  |
+| Inode → path(s)          | `BTRFS_IOC_INO_PATHS`       | `btrfs_ioctl_ino_path_args`     |
 
 ### Subvolume listing
 
@@ -195,6 +228,38 @@ incremental `Send`, `SetReceivedSubvol`, and stream parsing) are the producer
 side plus the `SET_RECEIVED_SUBVOL` primitive a future receiver will need; a
 native receive-apply is the planned follow-up.
 
+### Filesystem-level administration
+
+The label, resize, default-subvolume, and feature operations are addressed to an
+**open fd** (the mount point or any file/dir on the filesystem) rather than a
+path, matching the kernel's fd-based ioctls:
+
+- **Label** — `GetLabel`/`SetLabel` use the generic `FS_IOC_GETFSLABEL` /
+  `FS_IOC_SETFSLABEL` (which btrfs aliases), a `char[BTRFS_LABEL_SIZE]` (256)
+  buffer. The relabel is online and persisted.
+- **Resize** — `Resize` passes the size spec as a string in
+  `btrfs_ioctl_vol_args.name`, exactly as the kernel parses it: `"+1G"`,
+  `"-512M"`, `"max"`, or `devid:size`. Shrinking relocates data past the new
+  boundary first, so it can block.
+- **Default subvolume** — `SetDefaultSubvol` is a one-`__u64` ioctl. There is no
+  matching read ioctl, so `GetDefaultSubvol` reads the `"default"` `DIR_ITEM`
+  out of the root tree (objectid `BTRFS_ROOT_TREE_DIR_OBJECTID`, type
+  `DIR_ITEM_KEY`) with the same `TREE_SEARCH(_V2)` helper as `ListSubvolumes`,
+  returning the subvolume id in the dir item's location key (id 5 when unset).
+- **Features** — `GetFeatures` and `GetSupportedFeatures` decode
+  `btrfs_ioctl_feature_flags` (the three `compat`/`compat_ro`/`incompat` masks)
+  into typed bit constants and symbolic `Names`. `SetFeatures` takes a
+  `FeatureChange` (clear-mask then set-mask) for the online-togglable subset the
+  kernel reports in `GetSupportedFeatures().SafeSet` / `SafeClear`; the kernel
+  masks any request down to that subset.
+
+`LogicalToIno` and `InoToPath` are the reverse of the usual inode→extent
+mapping, useful for turning a scrub/csum error at a physical location back into
+the affected files. Each passes a userspace `btrfs_data_container` buffer to the
+kernel (`BTRFS_IOC_LOGICAL_INO` fills `(inode, offset, root)` triples;
+`BTRFS_IOC_INO_PATHS` fills relative path strings) and surfaces the kernel's
+`elem_missed`/`bytes_missing` counters as a truncation error.
+
 ## How it works
 
 - **`abi.go`** — the `BTRFS_IOC_*` numbers are recomputed in Go from the
@@ -216,6 +281,13 @@ native receive-apply is the planned follow-up.
   `..._qgroup_create_args`, `..._qgroup_assign_args`, `..._qgroup_limit_args`,
   `..._defrag_range_args`) mirrored and their sizes/offsets pinned in
   `abi_quota_test.go` against the same C probe over the live 6.12 headers.
+- **`abi_fsadmin.go`** — same treatment for the filesystem-level admin ioctls
+  (label, resize, default subvolume, features, reverse mapping): numbers
+  recomputed from the encoding (including the `FS_IOC_*` label aliases over
+  `linux/fs.h`), structs (`btrfs_ioctl_feature_flags`, `..._logical_ino_args`,
+  `..._ino_path_args`, `btrfs_data_container`) and the `DIR_ITEM`/feature-bit
+  constants mirrored and pinned in `abi_fsadmin_test.go` against the same C
+  probe over the live 6.12 headers.
 - **`btrfs_linux.go`** — opens the target directory, issues the ioctl on its
   fd, and (de)serializes the struct. The `btrfs` CLI is never invoked.
 - **`btrfs_admin_linux.go`** — the admin operations: the generic tree-search
@@ -223,6 +295,10 @@ native receive-apply is the planned follow-up.
   device/scrub/balance wrappers.
 - **`btrfs_quota_linux.go`** — the quota/qgroup management, the quota-tree walk
   for `ListQgroups`, and the defrag wrappers.
+- **`btrfs_fsadmin_linux.go`** — the filesystem-level admin operations: label
+  get/set, online resize, default-subvolume set (and the root-tree `DIR_ITEM`
+  read for get), the feature-flag ioctls with typed decoding, and the
+  `LOGICAL_INO`/`INO_PATHS` reverse mapping over a `btrfs_data_container`.
 - **`abi_send.go`** — same treatment for the send / set-received ioctls: numbers
   recomputed from the encoding, structs (`btrfs_ioctl_send_args`,
   `..._received_subvol_args`) and the on-stream framing constants mirrored and
