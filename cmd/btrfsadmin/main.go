@@ -17,80 +17,115 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/go-fsctl/btrfs"
 )
 
-func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("usage: btrfsadmin <mount> [add-dev] [rm-dev]")
-		os.Exit(2)
+// Seams over the btrfs package and the process, overridable in tests.
+var (
+	available      = btrfs.Available
+	listSubvolumes = btrfs.ListSubvolumes
+	getFsInfo      = btrfs.GetFsInfo
+	getDeviceInfo  = btrfs.GetDeviceInfo
+	deviceAdd      = btrfs.DeviceAdd
+	deviceRemove   = btrfs.DeviceRemove
+	scrubStart     = btrfs.ScrubStart
+	balanceStart   = btrfs.BalanceStart
+
+	osExit           = os.Exit
+	stdout io.Writer = os.Stdout
+)
+
+func main() { osExit(run(os.Args)) }
+
+func run(args []string) int {
+	if len(args) < 2 {
+		fmt.Fprintln(stdout, "usage: btrfsadmin <mount> [add-dev] [rm-dev]")
+		return 2
 	}
-	mnt := os.Args[1]
-	if !btrfs.Available(mnt) {
-		fmt.Printf("FAIL: %s is not a mounted btrfs filesystem\n", mnt)
-		os.Exit(1)
+	mnt := args[1]
+	if !available(mnt) {
+		fmt.Fprintf(stdout, "FAIL: %s is not a mounted btrfs filesystem\n", mnt)
+		return 1
 	}
-	fmt.Printf("btrfs mount %s (pure-Go ioctl admin path)\n", mnt)
+	fmt.Fprintf(stdout, "btrfs mount %s (pure-Go ioctl admin path)\n", mnt)
 
 	// --- ListSubvolumes (TREE_SEARCH) ---
-	subs, err := btrfs.ListSubvolumes(mnt)
-	check("ListSubvolumes", err)
-	fmt.Printf("OK: BTRFS_IOC_TREE_SEARCH listed %d subvolume(s):\n", len(subs))
+	subs, err := listSubvolumes(mnt)
+	if err != nil {
+		return fail("ListSubvolumes", err)
+	}
+	fmt.Fprintf(stdout, "OK: BTRFS_IOC_TREE_SEARCH listed %d subvolume(s):\n", len(subs))
 	for _, s := range subs {
-		fmt.Printf("    id=%d parent=%d name=%q path=%q\n", s.ID, s.ParentID, s.Name, s.Path)
+		fmt.Fprintf(stdout, "    id=%d parent=%d name=%q path=%q\n", s.ID, s.ParentID, s.Name, s.Path)
 	}
 
 	// --- FsInfo / DeviceInfo ---
-	fi, err := btrfs.GetFsInfo(mnt)
-	check("GetFsInfo", err)
-	fmt.Printf("OK: BTRFS_IOC_FS_INFO num_devices=%d max_id=%d nodesize=%d gen=%d\n",
+	fi, err := getFsInfo(mnt)
+	if err != nil {
+		return fail("GetFsInfo", err)
+	}
+	fmt.Fprintf(stdout, "OK: BTRFS_IOC_FS_INFO num_devices=%d max_id=%d nodesize=%d gen=%d\n",
 		fi.NumDevices, fi.MaxID, fi.Nodesize, fi.Generation)
-	dev, err := btrfs.GetDeviceInfo(mnt, 1)
-	check("GetDeviceInfo(1)", err)
-	fmt.Printf("OK: BTRFS_IOC_DEV_INFO devid=%d path=%q total=%d used=%d\n",
+	dev, err := getDeviceInfo(mnt, 1)
+	if err != nil {
+		return fail("GetDeviceInfo(1)", err)
+	}
+	fmt.Fprintf(stdout, "OK: BTRFS_IOC_DEV_INFO devid=%d path=%q total=%d used=%d\n",
 		dev.Devid, dev.Path, dev.TotalBytes, dev.BytesUsed)
 
 	// --- DeviceAdd / DeviceRemove ---
-	if len(os.Args) > 2 && os.Args[2] != "" {
-		addDev := os.Args[2]
-		check("DeviceAdd", btrfs.DeviceAdd(mnt, addDev))
-		fi2, err := btrfs.GetFsInfo(mnt)
-		check("GetFsInfo(after add)", err)
-		fmt.Printf("OK: BTRFS_IOC_ADD_DEV %s -> num_devices now %d\n", addDev, fi2.NumDevices)
+	if len(args) > 2 && args[2] != "" {
+		addDev := args[2]
+		if err := deviceAdd(mnt, addDev); err != nil {
+			return fail("DeviceAdd", err)
+		}
+		fi2, err := getFsInfo(mnt)
+		if err != nil {
+			return fail("GetFsInfo(after add)", err)
+		}
+		fmt.Fprintf(stdout, "OK: BTRFS_IOC_ADD_DEV %s -> num_devices now %d\n", addDev, fi2.NumDevices)
 
 		rmDev := addDev
-		if len(os.Args) > 3 && os.Args[3] != "" {
-			rmDev = os.Args[3]
+		if len(args) > 3 && args[3] != "" {
+			rmDev = args[3]
 		}
-		check("DeviceRemove", btrfs.DeviceRemove(mnt, rmDev))
-		fi3, err := btrfs.GetFsInfo(mnt)
-		check("GetFsInfo(after remove)", err)
-		fmt.Printf("OK: BTRFS_IOC_RM_DEV_V2 %s -> num_devices now %d\n", rmDev, fi3.NumDevices)
+		if err := deviceRemove(mnt, rmDev); err != nil {
+			return fail("DeviceRemove", err)
+		}
+		fi3, err := getFsInfo(mnt)
+		if err != nil {
+			return fail("GetFsInfo(after remove)", err)
+		}
+		fmt.Fprintf(stdout, "OK: BTRFS_IOC_RM_DEV_V2 %s -> num_devices now %d\n", rmDev, fi3.NumDevices)
 	}
 
 	// --- Scrub ---
-	sp, err := btrfs.ScrubStart(mnt, 1, btrfs.ScrubOptions{})
-	check("ScrubStart", err)
-	fmt.Printf("OK: BTRFS_IOC_SCRUB devid=1 data_scrubbed=%d tree_scrubbed=%d read_err=%d csum_err=%d uncorrectable=%d\n",
+	sp, err := scrubStart(mnt, 1, btrfs.ScrubOptions{})
+	if err != nil {
+		return fail("ScrubStart", err)
+	}
+	fmt.Fprintf(stdout, "OK: BTRFS_IOC_SCRUB devid=1 data_scrubbed=%d tree_scrubbed=%d read_err=%d csum_err=%d uncorrectable=%d\n",
 		sp.DataBytesScrubbed, sp.TreeBytesScrubbed, sp.ReadErrors, sp.CsumErrors, sp.UncorrectableErrors)
 	if sp.ReadErrors+sp.CsumErrors+sp.VerifyErrors+sp.UncorrectableErrors != 0 {
-		fmt.Println("WARN: scrub reported errors")
+		fmt.Fprintln(stdout, "WARN: scrub reported errors")
 	}
 
 	// --- Balance (full) ---
-	bp, err := btrfs.BalanceStart(mnt, btrfs.BalanceArgs{})
-	check("BalanceStart", err)
-	fmt.Printf("OK: BTRFS_IOC_BALANCE_V2 (full) expected=%d considered=%d completed=%d running=%v\n",
+	bp, err := balanceStart(mnt, btrfs.BalanceArgs{})
+	if err != nil {
+		return fail("BalanceStart", err)
+	}
+	fmt.Fprintf(stdout, "OK: BTRFS_IOC_BALANCE_V2 (full) expected=%d considered=%d completed=%d running=%v\n",
 		bp.Expected, bp.Considered, bp.Completed, bp.Running)
 
-	fmt.Println("ALL OK")
+	fmt.Fprintln(stdout, "ALL OK")
+	return 0
 }
 
-func check(what string, err error) {
-	if err != nil {
-		fmt.Printf("FAIL: %s: %v\n", what, err)
-		os.Exit(1)
-	}
+func fail(what string, err error) int {
+	fmt.Fprintf(stdout, "FAIL: %s: %v\n", what, err)
+	return 1
 }

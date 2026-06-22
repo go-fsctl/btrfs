@@ -12,7 +12,6 @@ package btrfs
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 	"unsafe"
 
@@ -24,7 +23,7 @@ import (
 // create/destroy, or the subvolume root itself for flag/info ops), never to a
 // global control device.
 func ioctlDir(path string, req uintptr, arg unsafe.Pointer) error {
-	f, err := os.Open(path)
+	f, err := osOpen(path)
 	if err != nil {
 		return fmt.Errorf("open %q: %w", path, err)
 	}
@@ -34,8 +33,7 @@ func ioctlDir(path string, req uintptr, arg unsafe.Pointer) error {
 
 // ioctlFd issues a single ioctl on an already-open fd.
 func ioctlFd(fd uintptr, req uintptr, arg unsafe.Pointer) error {
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, fd, req, uintptr(arg))
-	if errno != 0 {
+	if errno := doIoctl(fd, req, arg); errno != 0 {
 		return errno
 	}
 	return nil
@@ -91,7 +89,7 @@ func SnapshotCreate(srcSubvolPath, destParentDir, name string, readonly bool) er
 	if name == "" {
 		return fmt.Errorf("SnapshotCreate: empty name")
 	}
-	src, err := os.Open(srcSubvolPath)
+	src, err := osOpen(srcSubvolPath)
 	if err != nil {
 		return fmt.Errorf("SnapshotCreate: open src %q: %w", srcSubvolPath, err)
 	}
@@ -248,7 +246,7 @@ func Sync(path string) error {
 // when not running against a real btrfs mount.
 func Available(path string) bool {
 	var st unix.Statfs_t
-	if err := unix.Statfs(path, &st); err != nil {
+	if err := unixStatfs(path, &st); err != nil {
 		return false
 	}
 	return uint32(st.Type) == unix.BTRFS_SUPER_MAGIC

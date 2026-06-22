@@ -10,7 +10,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"os"
 	"runtime"
 	"unsafe"
 
@@ -55,7 +54,7 @@ type Subvolume struct {
 // that do not implement V2. The ioctl is privileged (the root tree is not
 // otherwise visible), so this typically requires root.
 func ListSubvolumes(path string) ([]Subvolume, error) {
-	f, err := os.Open(path)
+	f, err := osOpen(path)
 	if err != nil {
 		return nil, fmt.Errorf("ListSubvolumes: open %q: %w", path, err)
 	}
@@ -341,11 +340,12 @@ func DeviceRemove(mountPath, devPath string) error {
 		return nil
 	}
 	if isUnsupportedIoctl(err) {
-		// Fall back to the v1 ioctl (path in btrfs_ioctl_vol_args.name).
+		// Fall back to the v1 ioctl (path in btrfs_ioctl_vol_args.name). The v1
+		// name field (BTRFS_PATH_NAME_MAX+1 = 4088 bytes) is larger than the V2
+		// name field (BTRFS_SUBVOL_NAME_MAX+1 = 4040 bytes) the same devPath was
+		// already validated against above, so this putName cannot fail.
 		var v1 btrfsIoctlVolArgs
-		if e := putName(v1.Name[:], devPath); e != nil {
-			return fmt.Errorf("DeviceRemove: %w", e)
-		}
+		_ = putName(v1.Name[:], devPath)
 		e := ioctlDir(mountPath, BTRFS_IOC_RM_DEV, unsafe.Pointer(&v1))
 		runtime.KeepAlive(&v1)
 		if e != nil {

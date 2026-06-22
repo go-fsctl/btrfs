@@ -60,7 +60,7 @@ func Send(subvolFd int, w goio.Writer, opts SendOpts) error {
 	// A pipe carries the stream from the kernel (write end handed to the ioctl
 	// as send_fd) to us (read end drained into w). O_CLOEXEC on both ends.
 	var fds [2]int
-	if err := unix.Pipe2(fds[:], unix.O_CLOEXEC); err != nil {
+	if err := unixPipe2(fds[:], unix.O_CLOEXEC); err != nil {
 		return fmt.Errorf("Send: pipe2: %w", err)
 	}
 	rfd, wfd := fds[0], fds[1]
@@ -86,11 +86,11 @@ func Send(subvolFd int, w goio.Writer, opts SendOpts) error {
 	// stream exceeds the pipe buffer.
 	ioctlErr := make(chan error, 1)
 	go func() {
-		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(subvolFd), BTRFS_IOC_SEND, uintptr(unsafe.Pointer(&args)))
+		errno := doIoctl(uintptr(subvolFd), BTRFS_IOC_SEND, unsafe.Pointer(&args))
 		runtime.KeepAlive(&args)
 		runtime.KeepAlive(clone)
 		// Close the write end so the reader sees EOF once the stream is done.
-		_ = unix.Close(wfd)
+		_ = unixClose(wfd)
 		if errno != 0 {
 			ioctlErr <- errno
 		} else {
@@ -122,7 +122,7 @@ func newFdReader(fd int) *fdReader { return &fdReader{fd: fd} }
 
 func (r *fdReader) Read(p []byte) (int, error) {
 	for {
-		n, err := unix.Read(r.fd, p)
+		n, err := unixRead(r.fd, p)
 		if err == unix.EINTR {
 			continue
 		}
@@ -136,7 +136,7 @@ func (r *fdReader) Read(p []byte) (int, error) {
 	}
 }
 
-func (r *fdReader) Close() error { return unix.Close(r.fd) }
+func (r *fdReader) Close() error { return unixClose(r.fd) }
 
 // SetReceivedTimes carries the send/receive timestamps stamped onto a received
 // subvolume. Stime is the sender's ctime for the subvolume (copied from the
@@ -177,7 +177,7 @@ func SetReceivedSubvol(fd int, uuid [16]byte, ctransid uint64, times SetReceived
 	args.Stime = btrfsIoctlTimespec{Sec: times.Stime.Sec, Nsec: times.Stime.Nsec}
 	args.Rtime = btrfsIoctlTimespec{Sec: times.Rtime.Sec, Nsec: times.Rtime.Nsec}
 
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), BTRFS_IOC_SET_RECEIVED_SUBVOL, uintptr(unsafe.Pointer(&args)))
+	errno := doIoctl(uintptr(fd), BTRFS_IOC_SET_RECEIVED_SUBVOL, unsafe.Pointer(&args))
 	runtime.KeepAlive(&args)
 	if errno != 0 {
 		return SetReceivedResult{}, fmt.Errorf("BTRFS_IOC_SET_RECEIVED_SUBVOL: %w", errno)

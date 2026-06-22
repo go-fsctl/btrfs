@@ -9,7 +9,6 @@ package btrfs
 import (
 	"encoding/binary"
 	"fmt"
-	"os"
 	"runtime"
 	"unsafe"
 )
@@ -179,7 +178,7 @@ const qgroupIDSubvolMask = (uint64(1) << 48) - 1
 // error). The walk reuses the same tree-search helper as ListSubvolumes and is
 // privileged (typically root).
 func ListQgroups(path string) ([]Qgroup, error) {
-	f, err := os.Open(path)
+	f, err := osOpen(path)
 	if err != nil {
 		return nil, fmt.Errorf("ListQgroups: open %q: %w", path, err)
 	}
