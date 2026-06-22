@@ -278,3 +278,19 @@ type SetReceivedResult struct {
 func SetReceivedSubvol(fd int, uuid [16]byte, ctransid uint64, times SetReceivedTimes) (SetReceivedResult, error) {
 	return SetReceivedResult{}, ErrUnsupported
 }
+
+// ErrUnsupportedCommand mirrors the Linux error for an unimplemented
+// send-stream command; off Linux Receive always returns ErrUnsupported first.
+var ErrUnsupportedCommand = errors.New("btrfs: unsupported send-stream command")
+
+// ReceiveOpts controls a Receive. The zero value finalises each received
+// subvolume (stamp received UUID, set read-only) as `btrfs receive` does.
+type ReceiveOpts struct {
+	NoReadonly    bool
+	NoSetReceived bool
+}
+
+// Receive is unsupported off Linux. (Stream parsing in send_stream.go and the
+// TLV attribute decoding in recv_attrs.go work everywhere; only the syscall /
+// ioctl replay is Linux-only.)
+func Receive(destPath string, r goio.Reader, opts ReceiveOpts) error { return ErrUnsupported }

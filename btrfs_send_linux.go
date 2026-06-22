@@ -19,12 +19,11 @@ import (
 // SET_RECEIVED_SUBVOL ioctl, plus parsing of the resulting send stream. As with
 // the rest of the package it is pure Go and never shells out to the btrfs CLI.
 //
-// Receive (replaying a stream to recreate the subvolume tree) is intentionally
-// out of scope here: it is a large userspace state machine. The pieces shipped
-// here — full and incremental Send, SET_RECEIVED_SUBVOL, and stream parsing —
-// are the producer side and the interop primitive that lets our streams be
-// applied by real `btrfs receive` and lets a future receive-apply mark the
-// subvolumes it creates. Receive-apply is a documented follow-up.
+// The pieces here — full and incremental Send, SET_RECEIVED_SUBVOL, and stream
+// parsing — are the producer side and the interop primitives that let our
+// streams be applied by real `btrfs receive`. The consumer side (replaying a
+// stream to recreate the subvolume tree) lives in btrfs_receive_linux.go and
+// reuses SetReceivedSubvol and the stream parser from here.
 
 // SendOpts controls a Send. The zero value performs a full (non-incremental)
 // send of all data in the source subvolume.
