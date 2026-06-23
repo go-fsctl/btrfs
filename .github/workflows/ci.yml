@@ -74,12 +74,18 @@ jobs:
           mkdir -p testbins
           for pkg in $(go list ./...); do
             name=$(echo "$pkg" | tr '/' '_')
+            # Skip packages that genuinely have no test files; everything else
+            # MUST compile. A failed compile here is a real error and fails the
+            # job — we do not swallow it (a swallowed s390x build break once let a
+            # whole arch silently skip its coverage gate).
+            hastests=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}yes{{end}}' "$pkg")
+            if [ -z "$hastests" ]; then
+              echo "no test files for $pkg, skipping"
+              continue
+            fi
             echo "Compiling test binary for $pkg"
             CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
-              go test -c -covermode=atomic -o "testbins/${name}.test" "$pkg" || {
-                # Packages with no test files produce no binary; that is fine.
-                echo "no test binary for $pkg (no tests?)"
-              }
+              go test -c -covermode=atomic -o "testbins/${name}.test" "$pkg"
           done
           ls -l testbins
       - name: Run test binaries under QEMU (${{ matrix.arch }})

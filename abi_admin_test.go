@@ -152,8 +152,11 @@ func TestBalanceFlagBits(t *testing.T) {
 // TestSearchKeyEncoding checks that a search key constructed for the
 // root-tree ROOT_REF walk lays out the type-filter fields exactly where the
 // kernel reads them: min_type/max_type as 32-bit words at offsets 56/60 and
-// nr_items at 64. We build the struct, then read it back through its raw bytes
-// the way the kernel would.
+// nr_items at 64. We build the struct, then read it back through its raw bytes.
+// The ioctl passes the struct to the kernel as shared native-order memory (not
+// a wire format), so we read the fields with NativeEndian — on a big-endian
+// host (s390x) the integers are stored big-endian, exactly as the kernel there
+// expects.
 func TestSearchKeyEncoding(t *testing.T) {
 	key := btrfsIoctlSearchKey{
 		TreeID:      btrfsRootTreeObjectID,
@@ -166,16 +169,16 @@ func TestSearchKeyEncoding(t *testing.T) {
 	}
 	raw := (*[unsafe.Sizeof(btrfsIoctlSearchKey{})]byte)(unsafe.Pointer(&key))[:]
 
-	if got := binary.LittleEndian.Uint64(raw[0:8]); got != btrfsRootTreeObjectID {
+	if got := binary.NativeEndian.Uint64(raw[0:8]); got != btrfsRootTreeObjectID {
 		t.Errorf("tree_id at offset 0 = %d, want %d", got, btrfsRootTreeObjectID)
 	}
-	if got := binary.LittleEndian.Uint32(raw[56:60]); got != btrfsRootRefKey {
+	if got := binary.NativeEndian.Uint32(raw[56:60]); got != btrfsRootRefKey {
 		t.Errorf("min_type at offset 56 = %d, want %d", got, btrfsRootRefKey)
 	}
-	if got := binary.LittleEndian.Uint32(raw[60:64]); got != btrfsRootRefKey {
+	if got := binary.NativeEndian.Uint32(raw[60:64]); got != btrfsRootRefKey {
 		t.Errorf("max_type at offset 60 = %d, want %d", got, btrfsRootRefKey)
 	}
-	if got := binary.LittleEndian.Uint32(raw[64:68]); got != 4096 {
+	if got := binary.NativeEndian.Uint32(raw[64:68]); got != 4096 {
 		t.Errorf("nr_items at offset 64 = %d, want 4096", got)
 	}
 }

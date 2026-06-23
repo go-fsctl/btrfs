@@ -35,6 +35,12 @@ var (
 	unixPipe2  = unix.Pipe2
 	unixClose  = unix.Close
 	unixRead   = unix.Read
+
+	// unixMknod is the seam for creating device nodes during a receive replay.
+	// Creating a character/block device requires CAP_MKNOD (root), so its success
+	// path cannot run unprivileged; the seam lets tests exercise it without root
+	// while the integration tests still drive the real syscall.
+	unixMknod = unix.Mknod
 )
 
 // realIoctl is the production doIoctl: it issues the SYS_IOCTL syscall.

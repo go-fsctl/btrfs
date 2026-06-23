@@ -67,13 +67,13 @@ type ReceiveOpts struct {
 // mount it writes under, the current subvolume being materialised, and the
 // cached write fd reused across consecutive WRITE/CLONE to the same file.
 type receiver struct {
-	destPath string       // destination mount (where subvolumes are created)
+	destPath string // destination mount (where subvolumes are created)
 	opts     ReceiveOpts
 
-	subvolName string   // name of the subvolume currently being received
-	subvolPath string   // destPath/subvolName, the root commands apply under
-	subvolUUID [16]byte  // stream's subvol UUID (for SET_RECEIVED_SUBVOL)
-	ctransid   uint64    // stream's subvol ctransid
+	subvolName string       // name of the subvolume currently being received
+	subvolPath string       // destPath/subvolName, the root commands apply under
+	subvolUUID [16]byte     // stream's subvol UUID (for SET_RECEIVED_SUBVOL)
+	ctransid   uint64       // stream's subvol ctransid
 	otime      sendTimespec // subvol otime (used as the received stime)
 
 	curPath string   // path (relative to subvol) of the cached write fd
@@ -315,7 +315,7 @@ func (rc *receiver) doMknodDev(a *sendAttrs) error {
 	// MODE carries the full st_mode including the S_IFCHR/S_IFBLK type bits.
 	mode := uint32(a.mode)
 	dev := int(a.rdev)
-	if err := unix.Mknod(p, mode, dev); err != nil {
+	if err := unixMknod(p, mode, dev); err != nil {
 		return fmt.Errorf("mknod %s (mode %#o dev %d): %w", p, mode, dev, err)
 	}
 	return nil
@@ -337,10 +337,8 @@ func (rc *receiver) doRename(a *sendAttrs) error {
 	if err != nil {
 		return err
 	}
-	to, err := rc.full(a.pathTo)
-	if err != nil {
-		return err
-	}
+	// full() succeeded, so rc.subvolPath is set; the second join cannot fail.
+	to := filepath.Join(rc.subvolPath, a.pathTo)
 	// A rename may move the file whose write fd we have cached; drop it.
 	if rc.curPath == a.path || rc.curPath == a.pathTo {
 		rc.closeCurFile()
@@ -358,10 +356,8 @@ func (rc *receiver) doLink(a *sendAttrs) error {
 	if err != nil {
 		return err
 	}
-	target, err := rc.full(a.pathLink)
-	if err != nil {
-		return err
-	}
+	// full() succeeded, so rc.subvolPath is set; the second join cannot fail.
+	target := filepath.Join(rc.subvolPath, a.pathLink)
 	if err := unix.Link(target, newp); err != nil {
 		return fmt.Errorf("link %s -> %s: %w", newp, target, err)
 	}

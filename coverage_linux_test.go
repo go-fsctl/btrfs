@@ -33,6 +33,7 @@ func snapshotSeams() func() {
 	d := unixPipe2
 	e := unixClose
 	f := unixRead
+	g := unixMknod
 	return func() {
 		osOpen = a
 		doIoctl = b
@@ -40,6 +41,7 @@ func snapshotSeams() func() {
 		unixPipe2 = d
 		unixClose = e
 		unixRead = f
+		unixMknod = g
 	}
 }
 
@@ -355,7 +357,9 @@ func TestAvailable(t *testing.T) {
 		t.Fatal("want false on statfs error")
 	}
 	unixStatfs = func(_ string, st *unix.Statfs_t) error {
-		st.Type = int64(unix.BTRFS_SUPER_MAGIC)
+		// st.Type is int64 on most arches but uint32 on s390x; assigning the
+		// untyped constant directly lets it convert to whichever the arch uses.
+		st.Type = unix.BTRFS_SUPER_MAGIC
 		return nil
 	}
 	if !Available("p") {
