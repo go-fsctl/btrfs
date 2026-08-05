@@ -93,6 +93,9 @@ res, err := btrfs.SetReceivedSubvol(fd, uuid, ctransid, btrfs.SetReceivedTimes{}
 // Introspect a stream (any platform, no kernel calls):
 h, n, err := btrfs.VerifyStream(r)            // Header{Magic, Version} + record count
 
+// Receive a stream:          replays SUBVOL/SNAPSHOT/MKFILE/WRITE/CLONE/... in userspace
+err = btrfs.Receive(destPath, r, btrfs.ReceiveOpts{}) // full or incremental; destPath is a dir on a btrfs mount
+
 // --- Filesystem-level administration (fd-based; mnt fd or any fd on the fs) ---
 fd := f.Fd()                                  // f, _ := os.Open(mnt)
 
@@ -224,12 +227,28 @@ parent) each applied cleanly, and every received file's sha256 matched the
 source. `NoData` produced a valid stream three orders of magnitude smaller than
 the full one for a 4 MiB file.
 
-**Deferred:** *receive-apply* — replaying a stream to recreate the subvolume
-tree — is a large userspace state machine (per-command file/dir/extent
-operations) and is intentionally out of scope here. The pieces shipped (full +
-incremental `Send`, `SetReceivedSubvol`, and stream parsing) are the producer
-side plus the `SET_RECEIVED_SUBVOL` primitive a future receiver will need; a
-native receive-apply is the planned follow-up.
+### Receive (stream replay)
+
+`Receive` is the consumer side of send/receive: it replays a v1 send stream
+(from a real `btrfs send` or our own `Send`) in pure userspace, recreating the
+sender's subvolume tree under `destPath`. A `SUBVOL` command creates a fresh
+subvolume; a `SNAPSHOT` command (incremental stream) snapshots the
+already-received parent found by the stream's clone/parent UUID. Every
+filesystem command (`MKFILE`/`MKDIR`/`SYMLINK`/`RENAME`/`LINK`/`UNLINK`/
+`RMDIR`/`WRITE`/`CLONE`/`SET_XATTR`/`REMOVE_XATTR`/`TRUNCATE`/`CHMOD`/`CHOWN`/
+`UTIMES`/...) is applied relative to that subvolume's root using ordinary
+syscalls plus `FICLONERANGE` for `CLONE`, and at `END` the received UUID is
+stamped and the subvolume is set read-only — exactly as the real
+`btrfs receive` does, so `Send` → `Receive` round-trips entirely in-library and
+a `Receive`d subvolume can serve as the parent of a later incremental receive.
+`ReceiveOpts` can skip the read-only finalisation (`NoReadonly`) or the
+received-UUID stamp (`NoSetReceived`).
+
+**Deferred:** v2 encoded/compressed writes (`BTRFS_SEND_FLAG_COMPRESSED`;
+`ENCODED_WRITE`/`FALLOCATE`/`SETFLAGS`/`ENABLE_VERITY`) are not implemented — a
+default `btrfs send` does not emit them, and `Receive` returns
+`ErrUnsupportedCommand` rather than silently corrupting the tree if it meets
+one.
 
 ### Filesystem-level administration
 
@@ -309,6 +328,13 @@ kernel (`BTRFS_IOC_LOGICAL_INO` fills `(inode, offset, root)` triples;
   headers.
 - **`btrfs_send_linux.go`** — `Send` (pipe + goroutine draining the ioctl) and
   `SetReceivedSubvol`.
+- **`btrfs_receive_linux.go`** — `Receive`: parses the stream header, dispatches
+  each command to a `receiver` method (`doSubvol`, `doSnapshot`, `doMkdir`,
+  `doMknod`, `doSymlink`, `doRename`, `doLink`, `doUnlink`, `doRmdir`,
+  `doSetXattr`, `doRemoveXattr`, `doWrite`, `doClone`, `doTruncate`, `doChmod`,
+  `doChown`, `doUtimes`, `doEnd`), and finalises with `SetReceivedSubvol` +
+  the read-only flag.
+- **`recv_attrs.go`** — decodes a command's TLV attributes into `sendAttrs`.
 - **`send_stream.go`** — the platform-independent send-stream parser
   (`ParseHeader`, `CommandReader`, `VerifyStream`), built and tested everywhere.
 - **`btrfs_other.go`** — non-Linux stub returning `ErrUnsupported`.
