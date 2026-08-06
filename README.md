@@ -244,11 +244,13 @@ a `Receive`d subvolume can serve as the parent of a later incremental receive.
 `ReceiveOpts` can skip the read-only finalisation (`NoReadonly`) or the
 received-UUID stamp (`NoSetReceived`).
 
-**Deferred:** v2 encoded/compressed writes (`BTRFS_SEND_FLAG_COMPRESSED`;
-`ENCODED_WRITE`/`FALLOCATE`/`SETFLAGS`/`ENABLE_VERITY`) are not implemented — a
-default `btrfs send` does not emit them, and `Receive` returns
+**Deferred:** the v2 compressed-write family (`BTRFS_SEND_FLAG_COMPRESSED`;
+`ENCODED_WRITE`/`SETFLAGS` (fileattr)/`ENABLE_VERITY`) is not implemented — a
+default `btrfs send` does not emit it, and `Receive` returns
 `ErrUnsupportedCommand` rather than silently corrupting the tree if it meets
-one.
+one. `FALLOCATE`/`UPDATE_EXTENT` (preallocation hints) **are** handled: they
+are treated as no-ops, since the `WRITE` commands that follow materialise the
+actual bytes.
 
 ### Filesystem-level administration
 
