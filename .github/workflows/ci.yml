@@ -60,7 +60,7 @@ jobs:
   # image is a real filesystem.
   kernel:
     name: the two mounts the tests never had
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
