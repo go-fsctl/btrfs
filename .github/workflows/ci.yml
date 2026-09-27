@@ -42,6 +42,79 @@ jobs:
           awk -v c="$total" -v m="$COVERAGE_FLOOR" 'BEGIN { exit (c+0 >= m+0) ? 0 : 1 }' \
             || { echo "Coverage ${total}% below floor ${COVERAGE_FLOOR}%"; exit 1; }
 
+  # Sixteen integration tests drive the real ioctls against a live btrfs mount
+  # -- subvolume lifecycle, send, receive, and the filesystem admin calls --
+  # and cross-check the result against btrfs-progs. Not one has ever run.
+  #
+  # ⛔ Installing btrfs-progs alone would NOT have been the fix. Every one of
+  # them checks its MOUNT before it looks for the tool:
+  #
+  #   "%s is not a mounted btrfs filesystem; skipping"
+  #   "BTRFS_SEND_SRC and BTRFS_SEND_DST not both set; skipping"
+  #   "btrfs(8) not on PATH; skipping send interop test"
+  #
+  # The first two fire first, so a scan that only asks "is the binary
+  # installed" is satisfied by a change that moves the silence one line up.
+  # What these tests need is two btrfs filesystems and root, and a hosted
+  # runner can make both: btrfs is in Ubuntu's own kernel, and a loop-mounted
+  # image is a real filesystem.
+  kernel:
+    name: the two mounts the tests never had
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: two real btrfs filesystems
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq btrfs-progs
+          for n in 1 2; do
+            truncate -s 2G "$RUNNER_TEMP/bt$n.img"
+            mkfs.btrfs -q "$RUNNER_TEMP/bt$n.img"
+            sudo mkdir -p "/mnt/bt$n"
+            sudo mount -o loop "$RUNNER_TEMP/bt$n.img" "/mnt/bt$n"
+          done
+          findmnt -no FSTYPE /mnt/bt1
+          findmnt -no FSTYPE /mnt/bt2
+
+      # ⛔ A mount command that returned 0 is not a btrfs filesystem at that
+      # path. Ask the kernel what is actually there, the way the tests do.
+      - name: they are really btrfs
+        run: |
+          set -eu
+          for m in /mnt/bt1 /mnt/bt2; do
+            t=$(findmnt -no FSTYPE "$m" || true)
+            test "$t" = btrfs || { echo "::error::$m is $t, not btrfs"; exit 1; }
+          done
+          command -v btrfs
+
+      - name: the integration tests, as root
+        run: |
+          set -o pipefail
+          sudo -E env "PATH=$PATH" \
+            BTRFS_PATH=/mnt/bt1 BTRFS_SEND_SRC=/mnt/bt1 BTRFS_SEND_DST=/mnt/bt2 \
+            go test -count=1 -v -run TestIntegration ./... 2>&1 | tee kernel-output.txt
+
+      # ⛔ Only the four environment skips are failures here. Two others are
+      # deliberate and must stay allowed: "cannot stat the test file for its
+      # inode" and "no non-inline data extent found" are the test declining a
+      # case its own data did not produce, the way a reference encoder declines
+      # to compress what will not shrink. A blanket --- SKIP guard would turn a
+      # stated policy into a red lane.
+      - name: the kernel judges must have judged
+        run: |
+          if grep -qE "is not a mounted btrfs filesystem|not both set|btrfs\(8\) not on PATH" kernel-output.txt; then
+            echo "::error::an integration test skipped for want of its environment; the mounts were not used"
+            exit 1
+          fi
+          n=$(grep -c -- "--- PASS: TestIntegration" kernel-output.txt || true)
+          echo "integration tests passed: $n"
+          test "$n" -ge 10 || { echo "::error::only $n integration tests passed; 16 exist"; exit 1; }
+
   emulated:
     name: emulated (${{ matrix.arch }})
     runs-on: ubuntu-latest
