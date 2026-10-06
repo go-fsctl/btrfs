@@ -32,8 +32,8 @@ func TestQuotaIocNumbers(t *testing.T) {
 		{"QUOTA_RESCAN_STATUS", BTRFS_IOC_QUOTA_RESCAN_STATUS, 0x8040942d},
 		{"QUOTA_RESCAN_WAIT", BTRFS_IOC_QUOTA_RESCAN_WAIT, 0x942e},
 	} {
-		if c.got != c.want {
-			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
+		if want := kernelIOC(c.want); c.got != want {
+			t.Errorf("%s = %#x, want %#x", c.name, c.got, want)
 		}
 	}
 }

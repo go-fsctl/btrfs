@@ -30,8 +30,8 @@ func TestFsAdminIocNumbers(t *testing.T) {
 		{"LOGICAL_INO", BTRFS_IOC_LOGICAL_INO, 0xc0389424},
 		{"INO_PATHS", BTRFS_IOC_INO_PATHS, 0xc0389423},
 	} {
-		if c.got != c.want {
-			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
+		if want := kernelIOC(c.want); c.got != want {
+			t.Errorf("%s = %#x, want %#x", c.name, c.got, want)
 		}
 	}
 }

@@ -33,8 +33,8 @@ func TestAdminIocNumbers(t *testing.T) {
 		{"TREE_SEARCH", BTRFS_IOC_TREE_SEARCH, 0xd0009411},
 		{"TREE_SEARCH_V2", BTRFS_IOC_TREE_SEARCH_V2, 0xc0709411},
 	} {
-		if c.got != c.want {
-			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
+		if want := kernelIOC(c.want); c.got != want {
+			t.Errorf("%s = %#x, want %#x", c.name, c.got, want)
 		}
 	}
 }

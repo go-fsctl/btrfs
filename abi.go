@@ -11,25 +11,32 @@ import "unsafe"
 // _IO/_IOR/_IOW/_IOWR macro over magic 'X' = 0x94. We recompute the numbers
 // in Go rather than hard-coding hex so the derivation is self-documenting and
 // unit-testable; the expected hex (verified against linux/btrfs.h on a 6.12
-// kernel) is recorded in the comments and pinned in abi_test.go.
+// kernel, x86-64) is recorded in the comments and pinned in abi_test.go.
 //
-// The encoding is the asm-generic ioctl layout used on all the architectures
-// btrfs runs on (x86-64, arm64, ...):
+// The _IOC macro packs four fields:
 //
-//	(dir << 30) | (size << 16) | (type << 8) | nr
+//	(dir << iocDirShift) | (size << iocSizeShift) | (type << 8) | nr
 //
-// where size is sizeof(parameter type) and dir is one of NONE/WRITE/READ.
-// "READ"/"WRITE" are from the kernel's point of view: _IOR means the kernel
-// writes back to userspace, _IOW means userspace writes to the kernel.
+// where size is sizeof(parameter type) and dir is a combination of
+// NONE/WRITE/READ. "READ"/"WRITE" are from the kernel's point of view: _IOR
+// means the kernel writes back to userspace, _IOW means userspace writes to
+// the kernel.
+//
+// The width of the size field and the values of the direction bits are NOT the
+// same on every architecture. Most (x86, arm, arm64, riscv64, loong64, s390x)
+// use the asm-generic layout -- 14 size bits, 2 dir bits, NONE=0 WRITE=1
+// READ=2 -- but powerpc and mips define their own in
+// arch/{powerpc,mips}/include/uapi/asm/ioctl.h: 13 size bits, 3 dir bits,
+// NONE=1 READ=2 WRITE=4. Those constants live in ioclayout_generic.go and
+// ioclayout_ppcmips.go, selected by build tag. The hex values quoted in the
+// comments below are the asm-generic ones. On powerpc and mips every _IO,
+// _IOR and _IOW request differs (BTRFS_IOC_SUBVOL_GETFLAGS is 0x40089419
+// there, not 0x80089419) and the kernel answers ENOTTY to the generic number;
+// only _IOWR happens to coincide, because READ|WRITE is 3<<30 in one layout
+// and 6<<29 in the other.
 const (
-	iocNone  = 0
-	iocWrite = 1
-	iocRead  = 2
-
 	iocNRBits   = 8
 	iocTypeBits = 8
-	iocSizeBits = 14
-	iocDirBits  = 2
 
 	iocNRShift   = 0
 	iocTypeShift = iocNRShift + iocNRBits
@@ -137,24 +144,24 @@ type btrfsIoctlTimespec struct {
 // btrfs_ioctl_get_subvol_info_args (504 bytes). All fields are filled by the
 // kernel for BTRFS_IOC_GET_SUBVOL_INFO issued on a subvolume root fd.
 type btrfsIoctlGetSubvolInfoArgs struct {
-	Treeid      uint64
-	Name        [btrfsVolNameMax + 1]byte
-	ParentID    uint64
-	Dirid       uint64
-	Generation  uint64
-	Flags       uint64
-	UUID        [btrfsUUIDSize]byte
-	ParentUUID  [btrfsUUIDSize]byte
+	Treeid       uint64
+	Name         [btrfsVolNameMax + 1]byte
+	ParentID     uint64
+	Dirid        uint64
+	Generation   uint64
+	Flags        uint64
+	UUID         [btrfsUUIDSize]byte
+	ParentUUID   [btrfsUUIDSize]byte
 	ReceivedUUID [btrfsUUIDSize]byte
-	Ctransid    uint64
-	Otransid    uint64
-	Stransid    uint64
-	Rtransid    uint64
-	Ctime       btrfsIoctlTimespec
-	Otime       btrfsIoctlTimespec
-	Stime       btrfsIoctlTimespec
-	Rtime       btrfsIoctlTimespec
-	Reserved    [8]uint64
+	Ctransid     uint64
+	Otransid     uint64
+	Stransid     uint64
+	Rtransid     uint64
+	Ctime        btrfsIoctlTimespec
+	Otime        btrfsIoctlTimespec
+	Stime        btrfsIoctlTimespec
+	Rtime        btrfsIoctlTimespec
+	Reserved     [8]uint64
 }
 
 // BTRFS_IOC_* request numbers, derived from linux/btrfs.h. The trailing hex
