@@ -194,3 +194,76 @@ jobs:
               "/work/$bin" -test.v -test.short
             echo "::endgroup::"
           done
+
+  # The 32-bit lane. Every other lane here is 64-bit, so nothing ever compiled
+  # this package's tests where `int` is 32 bits wide -- and they did not
+  # compile: an untyped constant above 2^31 passed where an int (or int32) is
+  # expected is a compile error there and nowhere else. A library that builds
+  # for 386 but whose tests do not is a library nobody has tested on 386.
+  #
+  # Each arch is vetted and its test binary compiled; a failed compile fails
+  # the job (it is never swallowed: a skipped binary would be a green lane that
+  # tested nothing). 386 then runs natively on the x86_64 runner, and arm runs
+  # under the qemu binfmt_misc handler tonistiigi/binfmt registers -- the
+  # binaries are static (CGO_ENABLED=0), so no container image is involved.
+  # mips and mipsle are compile-only: tonistiigi/binfmt registers no
+  # qemu-mips(el), and the binary fails with "Exec format error" (measured in
+  # go-fsctl/blk's CI).
+  thirtytwo:
+    name: 32-bit (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: "386"
+            run: true
+          - arch: arm
+            run: true
+          - arch: mips
+            run: false
+          - arch: mipsle
+            run: false
+    env:
+      CGO_ENABLED: "0"
+      GOOS: linux
+      GOARCH: ${{ matrix.arch }}
+      GOARM: "7"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.1'
+      - name: Vet (linux/${{ matrix.arch }})
+        run: go vet ./...
+      - name: Compile per-package test binaries (linux/${{ matrix.arch }})
+        run: |
+          set -euo pipefail
+          mkdir -p testbins
+          for pkg in $(go list ./...); do
+            hastests=$(go list -f '{{if or .TestGoFiles .XTestGoFiles}}yes{{end}}' "$pkg")
+            if [ -z "$hastests" ]; then
+              echo "no test files for $pkg, skipping"
+              continue
+            fi
+            name=$(echo "$pkg" | tr '/' '_')
+            echo "Compiling test binary for $pkg"
+            go test -c -covermode=atomic -o "testbins/${name}.test" "$pkg"
+          done
+          ls -l testbins
+      - name: Set up binfmt (QEMU)
+        if: matrix.run && matrix.arch == 'arm'
+        run: docker run --rm --privileged tonistiigi/binfmt --install arm
+      - name: Run test binaries (linux/${{ matrix.arch }})
+        if: matrix.run
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          bins=(testbins/*.test)
+          test ${#bins[@]} -gt 0 || { echo "::error::no test binary was built"; exit 1; }
+          for bin in "${bins[@]}"; do
+            echo "::group::Running $bin on linux/${{ matrix.arch }}"
+            file "$bin"
+            "$bin" -test.short -test.count=1
+            echo "::endgroup::"
+          done
