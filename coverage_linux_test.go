@@ -1131,6 +1131,174 @@ func TestQgroupLimit(t *testing.T) {
 	}
 }
 
+func TestQuotaEnableSimple(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	var cmd uint64
+	installIoctl(func(req uintptr, arg unsafe.Pointer) unix.Errno {
+		if req != BTRFS_IOC_QUOTA_CTL {
+			t.Fatalf("req = %#x, want QUOTA_CTL", req)
+		}
+		cmd = (*btrfsIoctlQuotaCtlArgs)(arg).Cmd
+		return 0
+	})
+	if err := QuotaEnableSimple("p"); err != nil {
+		t.Fatalf("enable simple: %v", err)
+	}
+	if cmd != quotaCtlEnableSimple {
+		t.Fatalf("cmd = %d, want %d", cmd, quotaCtlEnableSimple)
+	}
+	installIoctl(ioctlErrno(unix.EINVAL))
+	if err := QuotaEnableSimple("p"); !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("want EINVAL, got %v", err)
+	}
+}
+
+func TestQuotaRescan(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	installIoctl(func(req uintptr, arg unsafe.Pointer) unix.Errno {
+		a := (*btrfsIoctlQuotaRescanArgs)(arg)
+		if req != BTRFS_IOC_QUOTA_RESCAN || a.Flags != 0 {
+			t.Fatalf("req = %#x flags = %d, want QUOTA_RESCAN with flags 0", req, a.Flags)
+		}
+		return 0
+	})
+	if err := QuotaRescan("p"); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+	installIoctl(ioctlErrno(unix.EINPROGRESS))
+	if err := QuotaRescan("p"); !errors.Is(err, unix.EINPROGRESS) {
+		t.Fatalf("want EINPROGRESS, got %v", err)
+	}
+}
+
+func TestQuotaRescanStatus(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	installIoctl(func(req uintptr, arg unsafe.Pointer) unix.Errno {
+		if req != BTRFS_IOC_QUOTA_RESCAN_STATUS {
+			t.Fatalf("req = %#x, want QUOTA_RESCAN_STATUS", req)
+		}
+		a := (*btrfsIoctlQuotaRescanArgs)(arg)
+		a.Flags, a.Progress = 1, 4242
+		return 0
+	})
+	st, err := QuotaRescanStatus("p")
+	if err != nil || st != (RescanStatus{Running: true, Progress: 4242}) {
+		t.Fatalf("status = %+v, %v", st, err)
+	}
+	installIoctl(ioctlOK)
+	st, err = QuotaRescanStatus("p")
+	if err != nil || st != (RescanStatus{}) {
+		t.Fatalf("idle status = %+v, %v", st, err)
+	}
+	installIoctl(ioctlErrno(unix.EPERM))
+	if _, err := QuotaRescanStatus("p"); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("want EPERM, got %v", err)
+	}
+}
+
+func TestQuotaRescanWait(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	installIoctl(func(req uintptr, arg unsafe.Pointer) unix.Errno {
+		if req != BTRFS_IOC_QUOTA_RESCAN_WAIT || arg != nil {
+			t.Fatalf("req = %#x arg = %v, want QUOTA_RESCAN_WAIT with no arg", req, arg)
+		}
+		return 0
+	})
+	if err := QuotaRescanWait("p"); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	installIoctl(ioctlErrno(unix.EPERM))
+	if err := QuotaRescanWait("p"); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("want EPERM, got %v", err)
+	}
+}
+
+func TestQuotaRescanAndWait(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	// run makes QUOTA_RESCAN answer rescanErr and RESCAN_WAIT answer waitErr,
+	// and reports whether the wait was issued.
+	run := func(rescanErr, waitErr unix.Errno) (waited bool, err error) {
+		installIoctl(func(req uintptr, _ unsafe.Pointer) unix.Errno {
+			if req == BTRFS_IOC_QUOTA_RESCAN {
+				return rescanErr
+			}
+			if req != BTRFS_IOC_QUOTA_RESCAN_WAIT {
+				t.Fatalf("unexpected req %#x", req)
+			}
+			waited = true
+			return waitErr
+		})
+		err = QuotaRescanAndWait("p")
+		return waited, err
+	}
+	if waited, err := run(0, 0); err != nil || !waited {
+		t.Fatalf("started: waited=%v err=%v", waited, err)
+	}
+	// Already running: tolerated, and still waited on.
+	if waited, err := run(unix.EINPROGRESS, 0); err != nil || !waited {
+		t.Fatalf("EINPROGRESS must be tolerated and waited on: waited=%v err=%v", waited, err)
+	}
+	// Any other rescan error stops before the wait.
+	if waited, err := run(unix.ENOTCONN, 0); !errors.Is(err, unix.ENOTCONN) || waited {
+		t.Fatalf("want ENOTCONN without a wait, got waited=%v err=%v", waited, err)
+	}
+	// A failing wait is reported.
+	if _, err := run(0, unix.EPERM); !errors.Is(err, unix.EPERM) {
+		t.Fatalf("want EPERM from wait, got %v", err)
+	}
+}
+
+func TestSubvolQgroupID(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	installIoctl(func(req uintptr, arg unsafe.Pointer) unix.Errno {
+		(*btrfsIoctlInoLookupArgs)(arg).Treeid = 257
+		return 0
+	})
+	id, err := SubvolQgroupID("p")
+	if err != nil || id != 257 {
+		t.Fatalf("SubvolQgroupID = %d, %v; want 257 (0/257)", id, err)
+	}
+	installIoctl(ioctlErrno(unix.ENOTTY))
+	if _, err := SubvolQgroupID("p"); !errors.Is(err, unix.ENOTTY) {
+		t.Fatalf("want ENOTTY, got %v", err)
+	}
+}
+
+func TestSubvolLimit(t *testing.T) {
+	defer snapshotSeams()()
+	openOK(t)
+	var got btrfsIoctlQgroupLimitArgs
+	installIoctl(func(req uintptr, arg unsafe.Pointer) unix.Errno {
+		if req != BTRFS_IOC_QGROUP_LIMIT {
+			t.Fatalf("req = %#x, want QGROUP_LIMIT", req)
+		}
+		got = *(*btrfsIoctlQgroupLimitArgs)(arg)
+		return 0
+	})
+	if err := SubvolLimit("p", 1<<30); err != nil {
+		t.Fatalf("limit: %v", err)
+	}
+	if got.Qgroupid != 0 || got.Lim.Flags != QgroupLimitMaxRfer || got.Lim.MaxRfer != 1<<30 {
+		t.Fatalf("limit args = %+v; want qgroupid 0 (the fd's subvolume), max_rfer 1GiB", got)
+	}
+	if err := SubvolLimit("p", 0); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got.Lim.Flags != QgroupLimitMaxRfer || got.Lim.MaxRfer != qgroupLimitClear {
+		t.Fatalf("clear args = %+v; want max_rfer (u64)-1", got)
+	}
+	installIoctl(ioctlErrno(unix.ENOTCONN))
+	if err := SubvolLimit("p", 1); !errors.Is(err, unix.ENOTCONN) {
+		t.Fatalf("want ENOTCONN, got %v", err)
+	}
+}
+
 func TestQgroupHasLimit(t *testing.T) {
 	if (Qgroup{}).HasLimit() {
 		t.Fatal("zero should have no limit")

@@ -78,6 +78,22 @@ err = btrfs.QgroupAssign(mnt, 0<<48|256, 1<<48|100) // QgroupRemove to undo
 err = btrfs.QgroupLimit(mnt, 0<<48|256,       // cap referenced bytes (writes past it -> EDQUOT)
     btrfs.QgroupLimits{Flags: btrfs.QgroupLimitMaxRfer, MaxRfer: 16 << 20})
 qgs, err := btrfs.ListQgroups(mnt)            // []Qgroup{ID, Level, SubvolID, Rfer, Excl, MaxRfer, ...}
+id := btrfs.QgroupID(1, 100)                  // level<<48 | id, i.e. "1/100"
+
+// Quota rescan:               BTRFS_IOC_QUOTA_RESCAN / RESCAN_STATUS / RESCAN_WAIT
+err = btrfs.QuotaRescan(mnt)                  // start; errors.Is(err, unix.EINPROGRESS) if one runs
+st, err := btrfs.QuotaRescanStatus(mnt)       // RescanStatus{Running, Progress}
+err = btrfs.QuotaRescanWait(mnt)              // block until done (returns at once if idle)
+err = btrfs.QuotaRescanAndWait(mnt)           // `btrfs quota rescan -w`: start (or join) and wait
+err = btrfs.QuotaEnableSimple(mnt)            // simple quotas (squota), Linux >= 6.7
+
+// A size-limited subvolume per share (the provisioner path):
+err = btrfs.QuotaEnable(mnt)                  // once per filesystem; queues its own rescan
+err = btrfs.QuotaRescanWait(mnt)              // let the accounting settle
+err = btrfs.SubvolCreate(mnt, "share1")
+qid, err := btrfs.SubvolQgroupID(mnt + "/share1") // its level-0 qgroup: 0/<subvol id>
+err = btrfs.SubvolLimit(mnt+"/share1", 10<<30) // max_rfer 10 GiB; writes past it -> EDQUOT
+err = btrfs.SubvolLimit(mnt+"/share1", 0)      // 0 lifts the limit
 
 // Defragment:                 BTRFS_IOC_DEFRAG / DEFRAG_RANGE
 err = btrfs.Defrag(mnt + "/file")             // whole file (or a directory's b-tree)
@@ -149,6 +165,9 @@ paths, err := btrfs.InoToPath(fd, inode)       // paths relative to the subvolum
 | Qgroup create / destroy  | `BTRFS_IOC_QGROUP_CREATE`   | `btrfs_ioctl_qgroup_create_args` |
 | Qgroup assign / remove   | `BTRFS_IOC_QGROUP_ASSIGN`   | `btrfs_ioctl_qgroup_assign_args` |
 | Qgroup limit             | `BTRFS_IOC_QGROUP_LIMIT`    | `btrfs_ioctl_qgroup_limit_args` |
+| Quota rescan start       | `BTRFS_IOC_QUOTA_RESCAN`    | `btrfs_ioctl_quota_rescan_args` |
+| Quota rescan status      | `BTRFS_IOC_QUOTA_RESCAN_STATUS` | `btrfs_ioctl_quota_rescan_args` |
+| Quota rescan wait        | `BTRFS_IOC_QUOTA_RESCAN_WAIT` | (none)                        |
 | List qgroups             | `BTRFS_IOC_TREE_SEARCH_V2`  | over the quota tree (`QGROUP_INFO` + `QGROUP_LIMIT` items) |
 | Defragment file/dir      | `BTRFS_IOC_DEFRAG`          | `btrfs_ioctl_vol_args`          |
 | Defragment byte range    | `BTRFS_IOC_DEFRAG_RANGE`    | `btrfs_ioctl_defrag_range_args` |
@@ -184,6 +203,41 @@ The root tree is privileged, so listing generally requires root.
 decodes the id into its `Level` (`id >> 48`) and `SubvolID` (`id & ((1<<48)-1)`)
 components. Quotas must be enabled or the quota tree does not exist (the kernel
 returns `ENOENT`). Like the root-tree walk it is privileged.
+
+### Limiting a subvolume, and what qgroups cost
+
+Every subvolume gets a level-0 qgroup whose id is the subvolume id
+(btrfs-progs `Documentation/ch-quota-intro.rst`: "Qgroups of level 0 get
+created automatically when a subvolume/snapshot gets created. The ID of the
+qgroup corresponds to the ID of the subvolume"). `SubvolQgroupID(path)` returns
+it as `QgroupID(0, SubvolID(path))`. `SubvolLimit(path, maxRfer)` issues
+`BTRFS_IOC_QGROUP_LIMIT` with qgroupid 0 on the subvolume itself, which
+`fs/btrfs/ioctl.c` `btrfs_ioctl_qgroup_limit()` resolves to the fd's own
+subvolume ("take the current subvol as qgroup"); `maxRfer` 0 sends the kernel's
+`(u64)-1` "clear" value (`fs/btrfs/qgroup.c` `btrfs_limit_qgroup()`).
+
+Rescans: `QuotaEnable` queues a rescan itself, so a `QuotaRescan` straight after
+it answers `EINPROGRESS`; `QuotaRescanWait` returns at once when nothing runs, so
+it is the safe call after either. `QuotaRescan` errors: `EINPROGRESS` (already
+running), `ENOTCONN` (quotas off), `EINVAL` (simple-quota mode has no rescan),
+`EBUSY` (quotas being disabled), `EPERM` (no `CAP_SYS_ADMIN`).
+
+Caveats before turning quotas on for many shares:
+
+- **Full qgroups get slow as snapshots multiply.** From `ch-quota-intro.rst`:
+  "many of the computations are global [...] This can slow down transaction
+  commits and lead to unacceptable latencies, especially in cases where
+  snapshots scale up"; `Kernel-by-version.rst` (6.7): "The deletion of
+  snapshots in fully accounting qgroups is a known CPU/IO performance
+  bottleneck."
+- **Simple quotas (`QuotaEnableSimple`, Linux >= 6.7) trade accuracy for that
+  cost.** They "do not track shared vs. exclusive usage. Instead, they account
+  all extents to the subvolume that first allocated it" (`ch-quota-intro.rst`):
+  data a snapshot still shares stays charged to the original subvolume, even
+  after that subvolume empties it. They set the `SIMPLE_QUOTA` incompat
+  feature, there is no rescan (`EINVAL`), and enabling is a no-op while quotas
+  are already on in full mode — `QuotaDisable` first to switch.
+- `EDQUOT` can surface on `write(2)` or only at `fsync`/commit; check both.
 
 ### Scrub and balance are synchronous
 

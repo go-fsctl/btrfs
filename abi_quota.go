@@ -20,7 +20,29 @@ import "unsafe"
 const (
 	quotaCtlEnable  = 1 // BTRFS_QUOTA_CTL_ENABLE
 	quotaCtlDisable = 2 // BTRFS_QUOTA_CTL_DISABLE
+	// 3 is BTRFS_QUOTA_CTL_RESCAN__NOTUSED: rescans have their own ioctls.
+	quotaCtlEnableSimple = 4 // BTRFS_QUOTA_CTL_ENABLE_SIMPLE_QUOTA
 )
+
+// qgroupLimitClear is the value fs/btrfs/qgroup.c btrfs_limit_qgroup() treats
+// as "clear this limit" ("we treat the -1 as a special value which tell kernel
+// to clear the limit on this qgroup"): with the matching flag set, a field of
+// (u64)-1 drops the flag rather than setting a limit.
+const qgroupLimitClear = ^uint64(0)
+
+// qgroupIDSubvolMask selects the subvolume-id half of a qgroup id; the level
+// lives in the top 16 bits (level<<48 | id).
+const qgroupIDSubvolMask = (uint64(1) << 48) - 1
+
+// QgroupID encodes a qgroup id from its level and id components the way the
+// kernel and btrfs(8) do (level<<48 | id), so QgroupID(1, 100) is "1/100".
+// The level-0 qgroup of a subvolume carries the subvolume's own id —
+// btrfs-progs Documentation/ch-quota-intro.rst: "The ID of the qgroup
+// corresponds to the ID of the subvolume, so 0/5 is the qgroup for the
+// toplevel subvolume." id is truncated to its low 48 bits.
+func QgroupID(level, id uint64) uint64 {
+	return level<<48 | id&qgroupIDSubvolMask
+}
 
 // Qgroup limit flags (linux/btrfs.h), exported for QgroupLimit. They select
 // which of the limit fields the kernel should enforce.
@@ -55,6 +77,24 @@ const (
 type btrfsIoctlQuotaCtlArgs struct {
 	Cmd    uint64
 	Status uint64
+}
+
+// btrfsIoctlQuotaRescanArgs mirrors struct btrfs_ioctl_quota_rescan_args
+// (64 bytes), shared by QUOTA_RESCAN (in) and QUOTA_RESCAN_STATUS (out):
+//
+//	struct btrfs_ioctl_quota_rescan_args {
+//	  __u64 flags; __u64 progress; __u64 reserved[6];
+//	};
+//
+// On QUOTA_RESCAN, fs/btrfs/ioctl.c btrfs_ioctl_quota_rescan() rejects any
+// non-zero flags with EINVAL. On QUOTA_RESCAN_STATUS,
+// btrfs_ioctl_quota_rescan_status() sets flags = 1 and progress to the
+// objectid the rescan has reached while BTRFS_QGROUP_STATUS_FLAG_RESCAN is set,
+// and returns zeroes otherwise.
+type btrfsIoctlQuotaRescanArgs struct {
+	Flags    uint64
+	Progress uint64
+	Reserved [6]uint64
 }
 
 // btrfsIoctlQgroupCreateArgs mirrors struct btrfs_ioctl_qgroup_create_args
@@ -157,4 +197,10 @@ var (
 	BTRFS_IOC_QGROUP_CREATE = iow(btrfsIoctlMagic, 42, unsafe.Sizeof(btrfsIoctlQgroupCreateArgs{})) // 0x4010942a
 	// _IOR(0x94, 43, struct btrfs_ioctl_qgroup_limit_args)
 	BTRFS_IOC_QGROUP_LIMIT = ior(btrfsIoctlMagic, 43, unsafe.Sizeof(btrfsIoctlQgroupLimitArgs{})) // 0x8030942b
+	// _IOW(0x94, 44, struct btrfs_ioctl_quota_rescan_args)
+	BTRFS_IOC_QUOTA_RESCAN = iow(btrfsIoctlMagic, 44, unsafe.Sizeof(btrfsIoctlQuotaRescanArgs{})) // 0x4040942c
+	// _IOR(0x94, 45, struct btrfs_ioctl_quota_rescan_args)
+	BTRFS_IOC_QUOTA_RESCAN_STATUS = ior(btrfsIoctlMagic, 45, unsafe.Sizeof(btrfsIoctlQuotaRescanArgs{})) // 0x8040942d
+	// _IO(0x94, 46)
+	BTRFS_IOC_QUOTA_RESCAN_WAIT = io(btrfsIoctlMagic, 46) // 0x0000942e
 )

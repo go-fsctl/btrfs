@@ -79,7 +79,10 @@ jobs:
           #   setfattr: exec: "setfattr": executable file not found in $PATH
           # which is a Fatal and not a skip, so at least it was loud.
           sudo apt-get install -y -qq btrfs-progs attr
-          for n in 1 2; do
+          # bt3 is for simple quotas alone: switching a filesystem between full
+          # and simple accounting means disabling quotas on it, and simple mode
+          # leaves the SIMPLE_QUOTA incompat flag behind.
+          for n in 1 2 3; do
             truncate -s 2G "$RUNNER_TEMP/bt$n.img"
             mkfs.btrfs -q "$RUNNER_TEMP/bt$n.img"
             sudo mkdir -p "/mnt/bt$n"
@@ -87,13 +90,16 @@ jobs:
           done
           findmnt -no FSTYPE /mnt/bt1
           findmnt -no FSTYPE /mnt/bt2
+          findmnt -no FSTYPE /mnt/bt3
+          # Simple quotas need Linux >= 6.7; say which kernel judged them.
+          uname -r
 
       # ⛔ A mount command that returned 0 is not a btrfs filesystem at that
       # path. Ask the kernel what is actually there, the way the tests do.
       - name: they are really btrfs
         run: |
           set -eu
-          for m in /mnt/bt1 /mnt/bt2; do
+          for m in /mnt/bt1 /mnt/bt2 /mnt/bt3; do
             t=$(findmnt -no FSTYPE "$m" || true)
             test "$t" = btrfs || { echo "::error::$m is $t, not btrfs"; exit 1; }
           done
@@ -105,9 +111,10 @@ jobs:
           set -o pipefail
           sudo -E env "PATH=$PATH" \
             BTRFS_PATH=/mnt/bt1 BTRFS_SEND_SRC=/mnt/bt1 BTRFS_SEND_DST=/mnt/bt2 \
+            BTRFS_SQUOTA_PATH=/mnt/bt3 \
             go test -count=1 -v -run TestIntegration ./... 2>&1 | tee kernel-output.txt
 
-      # ⛔ Only the four environment skips are failures here. Two others are
+      # ⛔ Only the five environment skips are failures here. Two others are
       # deliberate and must stay allowed: "cannot stat the test file for its
       # inode" and "no non-inline data extent found" are the test declining a
       # case its own data did not produce, the way a reference encoder declines
@@ -115,13 +122,18 @@ jobs:
       # stated policy into a red lane.
       - name: the kernel judges must have judged
         run: |
-          if grep -qE "is not a mounted btrfs filesystem|not both set|btrfs\(8\) not on PATH" kernel-output.txt; then
+          if grep -qE "is not a mounted btrfs filesystem|not both set|BTRFS_SQUOTA_PATH not set|btrfs\(8\) not on PATH" kernel-output.txt; then
             echo "::error::an integration test skipped for want of its environment; the mounts were not used"
             exit 1
           fi
           n=$(grep -c -- "--- PASS: TestIntegration" kernel-output.txt || true)
           echo "integration tests passed: $n"
-          test "$n" -ge 10 || { echo "::error::only $n integration tests passed; 16 exist"; exit 1; }
+          test "$n" -ge 12 || { echo "::error::only $n integration tests passed; 18 exist"; exit 1; }
+          # The provisioner path (rescan, SubvolQgroupID, SubvolLimit, EDQUOT)
+          # must have been judged in both accounting modes, by name.
+          for t in TestIntegrationProvisionFullQuota TestIntegrationProvisionSimpleQuota; do
+            grep -q -- "--- PASS: $t " kernel-output.txt || { echo "::error::$t did not pass"; exit 1; }
+          done
 
   emulated:
     name: emulated (${{ matrix.arch }})
