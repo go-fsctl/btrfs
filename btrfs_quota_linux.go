@@ -8,9 +8,12 @@ package btrfs
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"runtime"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // This file implements btrfs quota-group (qgroup) management and
@@ -19,31 +22,132 @@ import (
 
 // QuotaEnable turns on quota accounting on the btrfs filesystem containing
 // path, via BTRFS_IOC_QUOTA_CTL with BTRFS_QUOTA_CTL_ENABLE. Enabling quotas
-// kicks off an asynchronous rescan to populate qgroup usage; callers that need
-// accurate numbers immediately should write/Sync and allow the rescan to
-// settle. path is typically the mount point. Requires root.
+// kicks off an asynchronous rescan to populate qgroup usage
+// (fs/btrfs/qgroup.c btrfs_quota_enable() queues the rescan worker itself), so
+// a QuotaRescan issued straight afterwards fails with EINPROGRESS; call
+// QuotaRescanWait to block until the numbers are populated. path is typically
+// the mount point. Requires CAP_SYS_ADMIN.
 func QuotaEnable(path string) error {
-	var args btrfsIoctlQuotaCtlArgs
-	args.Cmd = quotaCtlEnable
-	err := ioctlDir(path, BTRFS_IOC_QUOTA_CTL, unsafe.Pointer(&args))
-	runtime.KeepAlive(&args)
-	if err != nil {
-		return fmt.Errorf("BTRFS_IOC_QUOTA_CTL(enable) %s: %w", path, err)
-	}
-	return nil
+	return quotaCtl(path, quotaCtlEnable, "enable")
+}
+
+// QuotaEnableSimple turns on simple quota accounting (squotas) on the btrfs
+// filesystem containing path, via BTRFS_IOC_QUOTA_CTL with
+// BTRFS_QUOTA_CTL_ENABLE_SIMPLE_QUOTA. Simple quotas appeared in Linux 6.7
+// (btrfs-progs Documentation/Kernel-by-version.rst, 6.7: "simple quota
+// accounting (squota)") and set the SIMPLE_QUOTA incompat feature on the
+// filesystem, which older kernels then refuse to mount. A kernel that does not
+// know the command answers EINVAL (fs/btrfs/ioctl.c btrfs_ioctl_quota_ctl():
+// an unlisted cmd falls to the switch's default case, ret = -EINVAL).
+//
+// Squotas share the qgroup API and limits, but "do not track shared vs.
+// exclusive usage. Instead, they account all extents to the subvolume that
+// first allocated it" (btrfs-progs Documentation/ch-quota-intro.rst). An
+// extent shared with a snapshot therefore stays charged to its first owner even
+// after that owner deletes it. There is no rescan in simple mode:
+// fs/btrfs/qgroup.c qgroup_rescan_init() returns EINVAL ("running in simple
+// mode"), so QuotaRescan fails with EINVAL and QuotaRescanWait returns at once.
+//
+// Enabling is a no-op once quotas are on in either mode: fs/btrfs/qgroup.c
+// btrfs_quota_enable() returns success early when a quota root already exists,
+// so this call on a filesystem with full qgroups returns nil and leaves it in
+// full mode. To switch, QuotaDisable first. Requires CAP_SYS_ADMIN.
+func QuotaEnableSimple(path string) error {
+	return quotaCtl(path, quotaCtlEnableSimple, "enable-simple")
 }
 
 // QuotaDisable turns off quota accounting on the btrfs filesystem containing
 // path, via BTRFS_IOC_QUOTA_CTL with BTRFS_QUOTA_CTL_DISABLE. Requires root.
 func QuotaDisable(path string) error {
+	return quotaCtl(path, quotaCtlDisable, "disable")
+}
+
+func quotaCtl(path string, cmd uint64, verb string) error {
 	var args btrfsIoctlQuotaCtlArgs
-	args.Cmd = quotaCtlDisable
+	args.Cmd = cmd
 	err := ioctlDir(path, BTRFS_IOC_QUOTA_CTL, unsafe.Pointer(&args))
 	runtime.KeepAlive(&args)
 	if err != nil {
-		return fmt.Errorf("BTRFS_IOC_QUOTA_CTL(disable) %s: %w", path, err)
+		return fmt.Errorf("BTRFS_IOC_QUOTA_CTL(%s) %s: %w", verb, path, err)
 	}
 	return nil
+}
+
+// QuotaRescan starts a full rescan of qgroup accounting on the btrfs filesystem
+// containing path, via BTRFS_IOC_QUOTA_RESCAN, and returns as soon as the
+// kernel has queued it; the rescan itself runs asynchronously (use
+// QuotaRescanStatus to poll, QuotaRescanWait to block, or QuotaRescanAndWait
+// for both steps). The kernel trashes the current numbers and recomputes them,
+// which is what makes usage correct after qgroups were assigned to a parent
+// after the fact.
+//
+// The errno is wrapped, so callers can test it with errors.Is:
+//
+//   - EINPROGRESS: a rescan is already running (fs/btrfs/qgroup.c
+//     qgroup_rescan_init() sees BTRFS_QGROUP_STATUS_FLAG_RESCAN). This is
+//     always the case right after QuotaEnable, which starts one itself.
+//   - ENOTCONN: quotas are not enabled (fs/btrfs/ioctl.c
+//     btrfs_ioctl_quota_rescan() checks btrfs_qgroup_enabled() first).
+//   - EINVAL: the filesystem is in simple-quota mode, which has no rescan.
+//   - EBUSY: quotas are being disabled concurrently.
+//   - EPERM: the caller lacks CAP_SYS_ADMIN.
+func QuotaRescan(path string) error {
+	var args btrfsIoctlQuotaRescanArgs // flags must be 0 or the kernel says EINVAL
+	err := ioctlDir(path, BTRFS_IOC_QUOTA_RESCAN, unsafe.Pointer(&args))
+	runtime.KeepAlive(&args)
+	if err != nil {
+		return fmt.Errorf("BTRFS_IOC_QUOTA_RESCAN %s: %w", path, err)
+	}
+	return nil
+}
+
+// RescanStatus is the state of a qgroup rescan reported by QuotaRescanStatus.
+type RescanStatus struct {
+	// Running is true while a rescan is in progress (the kernel's flags = 1).
+	Running bool
+	// Progress is the objectid the rescan has reached; 0 when not running.
+	Progress uint64
+}
+
+// QuotaRescanStatus reports whether a qgroup rescan is running on the btrfs
+// filesystem containing path, and how far it has got, via
+// BTRFS_IOC_QUOTA_RESCAN_STATUS. fs/btrfs/ioctl.c
+// btrfs_ioctl_quota_rescan_status() answers even when quotas are off (it then
+// reports not running). Requires CAP_SYS_ADMIN.
+func QuotaRescanStatus(path string) (RescanStatus, error) {
+	var args btrfsIoctlQuotaRescanArgs
+	err := ioctlDir(path, BTRFS_IOC_QUOTA_RESCAN_STATUS, unsafe.Pointer(&args))
+	runtime.KeepAlive(&args)
+	if err != nil {
+		return RescanStatus{}, fmt.Errorf("BTRFS_IOC_QUOTA_RESCAN_STATUS %s: %w", path, err)
+	}
+	return RescanStatus{Running: args.Flags != 0, Progress: args.Progress}, nil
+}
+
+// QuotaRescanWait blocks until the qgroup rescan running on the btrfs
+// filesystem containing path has finished, via BTRFS_IOC_QUOTA_RESCAN_WAIT. It
+// returns immediately when no rescan is running (fs/btrfs/qgroup.c
+// btrfs_qgroup_wait_for_completion() checks qgroup_rescan_running first), so it
+// is safe to call unconditionally after QuotaEnable or QuotaRescan. The wait is
+// interruptible; the Go runtime installs its signal handlers with SA_RESTART,
+// so a signal restarts it rather than surfacing EINTR. Requires CAP_SYS_ADMIN.
+func QuotaRescanWait(path string) error {
+	err := ioctlDir(path, BTRFS_IOC_QUOTA_RESCAN_WAIT, nil)
+	if err != nil {
+		return fmt.Errorf("BTRFS_IOC_QUOTA_RESCAN_WAIT %s: %w", path, err)
+	}
+	return nil
+}
+
+// QuotaRescanAndWait starts a rescan and waits for it to finish, accepting a
+// rescan that is already running — the behaviour of `btrfs quota rescan -w`
+// (btrfs-progs cmds/quota.c, which tolerates EINPROGRESS only when asked to
+// wait). Any other QuotaRescan error is returned without waiting.
+func QuotaRescanAndWait(path string) error {
+	if err := QuotaRescan(path); err != nil && !errors.Is(err, unix.EINPROGRESS) {
+		return err
+	}
+	return QuotaRescanWait(path)
 }
 
 // QgroupCreate creates the qgroup with the given id on the filesystem
@@ -151,6 +255,36 @@ func QgroupLimit(path string, qgroupid uint64, lim QgroupLimits) error {
 	return nil
 }
 
+// SubvolQgroupID returns the id of the level-0 qgroup of the subvolume
+// containing path: QgroupID(0, subvolume id). Every subvolume gets that qgroup
+// automatically when quotas are on — btrfs-progs
+// Documentation/ch-quota-intro.rst: "Qgroups of level 0 get created
+// automatically when a subvolume/snapshot gets created. The ID of the qgroup
+// corresponds to the ID of the subvolume". The lookup itself is SubvolID and
+// does not need quotas enabled.
+func SubvolQgroupID(path string) (uint64, error) {
+	id, err := SubvolID(path)
+	if err != nil {
+		return 0, err
+	}
+	return QgroupID(0, id), nil
+}
+
+// SubvolLimit caps the referenced bytes of the subvolume at path (its level-0
+// qgroup), via BTRFS_IOC_QGROUP_LIMIT issued on the subvolume itself with
+// qgroupid 0: fs/btrfs/ioctl.c btrfs_ioctl_qgroup_limit() substitutes the
+// root of the fd ("take the current subvol as qgroup"), so path must lie inside
+// the subvolume to limit. maxRfer 0 removes the limit (it is sent as the
+// kernel's (u64)-1 "clear" value). Once a limit is in force, writes that would
+// exceed it fail with EDQUOT. Quotas must be enabled (else ENOTCONN). Requires
+// CAP_SYS_ADMIN.
+func SubvolLimit(path string, maxRfer uint64) error {
+	if maxRfer == 0 {
+		maxRfer = qgroupLimitClear
+	}
+	return QgroupLimit(path, 0, QgroupLimits{Flags: QgroupLimitMaxRfer, MaxRfer: maxRfer})
+}
+
 // Qgroup is one entry returned by ListQgroups: a quota group with its decoded
 // id (level/subvolume), its referenced/exclusive byte usage, and its limits.
 // HasLimit reports whether any limit is in force (lim_flags non-zero).
@@ -167,8 +301,6 @@ type Qgroup struct {
 
 // HasLimit reports whether any usage limit is in force on this qgroup.
 func (q Qgroup) HasLimit() bool { return q.LimFlags != 0 }
-
-const qgroupIDSubvolMask = (uint64(1) << 48) - 1
 
 // ListQgroups enumerates every qgroup on the btrfs filesystem containing path.
 // It walks the quota tree (BTRFS_QUOTA_TREE_OBJECTID) via TREE_SEARCH(_V2),

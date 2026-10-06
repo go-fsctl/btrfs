@@ -26,6 +26,11 @@ func TestQuotaIocNumbers(t *testing.T) {
 		{"QGROUP_ASSIGN", BTRFS_IOC_QGROUP_ASSIGN, 0x40189429},
 		{"QGROUP_CREATE", BTRFS_IOC_QGROUP_CREATE, 0x4010942a},
 		{"QGROUP_LIMIT", BTRFS_IOC_QGROUP_LIMIT, 0x8030942b},
+		// _IOW(0x94, 44, 64-byte args), _IOR(0x94, 45, ...), _IO(0x94, 46)
+		// from include/uapi/linux/btrfs.h.
+		{"QUOTA_RESCAN", BTRFS_IOC_QUOTA_RESCAN, 0x4040942c},
+		{"QUOTA_RESCAN_STATUS", BTRFS_IOC_QUOTA_RESCAN_STATUS, 0x8040942d},
+		{"QUOTA_RESCAN_WAIT", BTRFS_IOC_QUOTA_RESCAN_WAIT, 0x942e},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
@@ -47,6 +52,8 @@ func TestQuotaStructSizes(t *testing.T) {
 		{"btrfs_qgroup_limit", unsafe.Sizeof(btrfsQgroupLimit{}), 40},
 		{"btrfs_ioctl_qgroup_limit_args", unsafe.Sizeof(btrfsIoctlQgroupLimitArgs{}), 48},
 		{"btrfs_ioctl_defrag_range_args", unsafe.Sizeof(btrfsIoctlDefragRangeArgs{}), 48},
+		// flags, progress, reserved[6]: eight __u64.
+		{"btrfs_ioctl_quota_rescan_args", unsafe.Sizeof(btrfsIoctlQuotaRescanArgs{}), 64},
 	} {
 		if c.got != c.want {
 			t.Errorf("sizeof(%s) = %d, want %d", c.name, c.got, c.want)
@@ -88,6 +95,10 @@ func TestQuotaStructOffsets(t *testing.T) {
 		{"defrag_range.ExtentThresh", unsafe.Offsetof(btrfsIoctlDefragRangeArgs{}.ExtentThresh), 24},
 		{"defrag_range.CompressType", unsafe.Offsetof(btrfsIoctlDefragRangeArgs{}.CompressType), 28},
 		{"defrag_range.Unused", unsafe.Offsetof(btrfsIoctlDefragRangeArgs{}.Unused), 32},
+		// quota_rescan_args: flags, progress, reserved[6].
+		{"quota_rescan.Flags", unsafe.Offsetof(btrfsIoctlQuotaRescanArgs{}.Flags), 0},
+		{"quota_rescan.Progress", unsafe.Offsetof(btrfsIoctlQuotaRescanArgs{}.Progress), 8},
+		{"quota_rescan.Reserved", unsafe.Offsetof(btrfsIoctlQuotaRescanArgs{}.Reserved), 16},
 	} {
 		if c.got != c.want {
 			t.Errorf("offsetof(%s) = %d, want %d", c.name, c.got, c.want)
@@ -105,6 +116,7 @@ func TestQuotaConstants(t *testing.T) {
 	}{
 		{"quotaCtlEnable", quotaCtlEnable, 1},
 		{"quotaCtlDisable", quotaCtlDisable, 2},
+		{"quotaCtlEnableSimple", quotaCtlEnableSimple, 4},
 		{"QgroupLimitMaxRfer", QgroupLimitMaxRfer, 1},
 		{"QgroupLimitMaxExcl", QgroupLimitMaxExcl, 2},
 		{"QgroupLimitRsvRfer", QgroupLimitRsvRfer, 4},
@@ -141,5 +153,27 @@ func TestQgroupInfoItemDecode(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint64(body[24:32]); got != 4096 {
 		t.Errorf("excl at offset 24 = %d, want 4096", got)
+	}
+}
+
+// TestQgroupID pins the level/id encoding against the forms btrfs(8) prints:
+// 0/5 is the top-level subvolume's qgroup, 1/100 a level-1 group, and ids
+// above 48 bits cannot leak into the level.
+func TestQgroupID(t *testing.T) {
+	for _, c := range []struct {
+		level, id, want uint64
+	}{
+		{0, 5, 5},
+		{0, 256, 256},
+		{1, 100, 1<<48 | 100},
+		{2, 1, 2<<48 | 1},
+		{0, 1<<48 | 7, 7},
+	} {
+		if got := QgroupID(c.level, c.id); got != c.want {
+			t.Errorf("QgroupID(%d, %d) = %#x, want %#x", c.level, c.id, got, c.want)
+		}
+	}
+	if qgroupLimitClear != 0xffffffffffffffff {
+		t.Errorf("qgroupLimitClear = %#x, want (u64)-1", qgroupLimitClear)
 	}
 }

@@ -188,6 +188,33 @@ func QuotaEnable(path string) error { return ErrUnsupported }
 // QuotaDisable is unsupported off Linux.
 func QuotaDisable(path string) error { return ErrUnsupported }
 
+// QuotaEnableSimple is unsupported off Linux.
+func QuotaEnableSimple(path string) error { return ErrUnsupported }
+
+// QuotaRescan is unsupported off Linux.
+func QuotaRescan(path string) error { return ErrUnsupported }
+
+// RescanStatus is the state of a qgroup rescan reported by QuotaRescanStatus.
+type RescanStatus struct {
+	Running  bool
+	Progress uint64
+}
+
+// QuotaRescanStatus is unsupported off Linux.
+func QuotaRescanStatus(path string) (RescanStatus, error) { return RescanStatus{}, ErrUnsupported }
+
+// QuotaRescanWait is unsupported off Linux.
+func QuotaRescanWait(path string) error { return ErrUnsupported }
+
+// QuotaRescanAndWait is unsupported off Linux.
+func QuotaRescanAndWait(path string) error { return ErrUnsupported }
+
+// SubvolQgroupID is unsupported off Linux.
+func SubvolQgroupID(path string) (uint64, error) { return 0, ErrUnsupported }
+
+// SubvolLimit is unsupported off Linux.
+func SubvolLimit(path string, maxRfer uint64) error { return ErrUnsupported }
+
 // QgroupCreate is unsupported off Linux.
 func QgroupCreate(path string, qgroupid uint64) error { return ErrUnsupported }
 
