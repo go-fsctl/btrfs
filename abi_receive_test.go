@@ -89,10 +89,11 @@ func TestReceiveAttrNumbers(t *testing.T) {
 }
 
 // TestReceiveIocNumbers pins FICLONERANGE, recomputed from its _IOW encoding,
-// to the value produced by the C preprocessor over linux/fs.h.
+// to the value produced by the C preprocessor over linux/fs.h (asm-generic
+// layout, re-encoded by kernelIOC on powerpc and mips).
 func TestReceiveIocNumbers(t *testing.T) {
-	if FICLONERANGE != 0x4020940d {
-		t.Errorf("FICLONERANGE = %#x, want 0x4020940d", FICLONERANGE)
+	if want := kernelIOC(0x4020940d); FICLONERANGE != want {
+		t.Errorf("FICLONERANGE = %#x, want %#x", FICLONERANGE, want)
 	}
 }
 

@@ -22,8 +22,8 @@ func TestSendIocNumbers(t *testing.T) {
 		{"SEND", BTRFS_IOC_SEND, 0x40489426},
 		{"SET_RECEIVED_SUBVOL", BTRFS_IOC_SET_RECEIVED_SUBVOL, 0xc0c89425},
 	} {
-		if c.got != c.want {
-			t.Errorf("%s = %#x, want %#x", c.name, c.got, c.want)
+		if want := kernelIOC(c.want); c.got != want {
+			t.Errorf("%s = %#x, want %#x", c.name, c.got, want)
 		}
 	}
 }
