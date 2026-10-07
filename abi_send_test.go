@@ -19,8 +19,8 @@ func TestSendIocNumbers(t *testing.T) {
 		got  uintptr
 		want uintptr
 	}{
-		{"SEND", BTRFS_IOC_SEND, 0x40489426},
-		{"SET_RECEIVED_SUBVOL", BTRFS_IOC_SET_RECEIVED_SUBVOL, 0xc0c89425},
+		{"SEND", BTRFS_IOC_SEND, abiWant(0x40489426, 0x40449426)},
+		{"SET_RECEIVED_SUBVOL", BTRFS_IOC_SET_RECEIVED_SUBVOL, abiWant(0xc0c89425, 0xc0c09425)},
 	} {
 		if want := kernelIOC(c.want); c.got != want {
 			t.Errorf("%s = %#x, want %#x", c.name, c.got, want)
@@ -36,9 +36,9 @@ func TestSendStructSizes(t *testing.T) {
 		got  uintptr
 		want uintptr
 	}{
-		{"btrfs_ioctl_send_args", unsafe.Sizeof(btrfsIoctlSendArgs{}), 72},
-		{"btrfs_ioctl_received_subvol_args", unsafe.Sizeof(btrfsIoctlReceivedSubvolArgs{}), 200},
-		{"btrfs_ioctl_timespec", unsafe.Sizeof(btrfsIoctlTimespec{}), 16},
+		{"btrfs_ioctl_send_args", unsafe.Sizeof(btrfsIoctlSendArgs{}), abiWant(72, 68)},
+		{"btrfs_ioctl_received_subvol_args", unsafe.Sizeof(btrfsIoctlReceivedSubvolArgs{}), abiWant(200, 192)},
+		{"btrfs_ioctl_timespec", unsafe.Sizeof(btrfsIoctlTimespec{}), abiWant(16, 12)},
 	} {
 		if c.got != c.want {
 			t.Errorf("sizeof(%s) = %d, want %d", c.name, c.got, c.want)
@@ -59,18 +59,18 @@ func TestSendStructOffsets(t *testing.T) {
 		{"send.SendFd", unsafe.Offsetof(btrfsIoctlSendArgs{}.SendFd), 0},
 		{"send.CloneSourcesCount", unsafe.Offsetof(btrfsIoctlSendArgs{}.CloneSourcesCount), 8},
 		{"send.CloneSources", unsafe.Offsetof(btrfsIoctlSendArgs{}.CloneSources), 16},
-		{"send.ParentRoot", unsafe.Offsetof(btrfsIoctlSendArgs{}.ParentRoot), 24},
-		{"send.Flags", unsafe.Offsetof(btrfsIoctlSendArgs{}.Flags), 32},
-		{"send.Version", unsafe.Offsetof(btrfsIoctlSendArgs{}.Version), 40},
-		{"send.Reserved", unsafe.Offsetof(btrfsIoctlSendArgs{}.Reserved), 44},
+		{"send.ParentRoot", unsafe.Offsetof(btrfsIoctlSendArgs{}.ParentRoot), abiWant(24, 20)},
+		{"send.Flags", unsafe.Offsetof(btrfsIoctlSendArgs{}.Flags), abiWant(32, 28)},
+		{"send.Version", unsafe.Offsetof(btrfsIoctlSendArgs{}.Version), abiWant(40, 36)},
+		{"send.Reserved", unsafe.Offsetof(btrfsIoctlSendArgs{}.Reserved), abiWant(44, 40)},
 		// received_subvol_args: uuid, stransid, rtransid, stime, rtime, flags.
 		{"recv.UUID", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.UUID), 0},
 		{"recv.Stransid", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Stransid), 16},
 		{"recv.Rtransid", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Rtransid), 24},
 		{"recv.Stime", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Stime), 32},
-		{"recv.Rtime", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Rtime), 48},
-		{"recv.Flags", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Flags), 64},
-		{"recv.Reserved", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Reserved), 72},
+		{"recv.Rtime", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Rtime), abiWant(48, 44)},
+		{"recv.Flags", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Flags), abiWant(64, 56)},
+		{"recv.Reserved", unsafe.Offsetof(btrfsIoctlReceivedSubvolArgs{}.Reserved), abiWant(72, 64)},
 	} {
 		if c.got != c.want {
 			t.Errorf("offsetof(%s) = %d, want %d", c.name, c.got, c.want)
