@@ -9,6 +9,34 @@ import (
 	"unsafe"
 )
 
+// abiWant picks the expected value for this target's word size: lp64 on a
+// 64-bit Go target, ilp32 on a 32-bit one (386, arm, mips, mipsle).
+//
+// The two differ only for the structs holding a pointer or a
+// struct btrfs_ioctl_timespec { __u64 sec; __u32 nsec; }. A 32-bit Go target
+// aligns uint64 to 4 bytes, so those structs come out with no padding, and the
+// request number (which encodes sizeof) changes with them. That packed layout
+// is not an accident to paper over: it is the one fs/btrfs/ioctl.c declares
+// for "a 32-bit userspace and 64-bit kernel" -- btrfs_ioctl_timespec_32,
+// btrfs_ioctl_received_subvol_args_32, btrfs_ioctl_get_subvol_info_args_32 and
+// btrfs_ioctl_send_args_32, all __attribute__((__packed__)) -- and dispatches
+// as BTRFS_IOC_SET_RECEIVED_SUBVOL_32, BTRFS_IOC_GET_SUBVOL_INFO_32 and
+// BTRFS_IOC_SEND_32. The ilp32 values below are computed from those packed
+// declarations by hand (offsets, then _IOC with the packed sizeof: 68, 192,
+// 488), not read back from the Go structs.
+//
+// A native 32-bit arm or mips KERNEL is a different ABI: there the C compiler
+// aligns __u64 to 8, the uapi structs keep their 64-bit padding, and the
+// request numbers carry the 64-bit sizes. This package's 32-bit numbers are
+// unknown to such a kernel, so those three calls fail with ENOTTY there rather
+// than being misread.
+func abiWant(lp64, ilp32 uintptr) uintptr {
+	if unsafe.Sizeof(uintptr(0)) == 4 {
+		return ilp32
+	}
+	return lp64
+}
+
 // TestIocNumbers pins the BTRFS_IOC_* request numbers derived in abi.go to the
 // values produced by the C preprocessor over linux/btrfs.h (verified against a
 // 6.12 x86-64 kernel: magic 'X' = 0x94, asm-generic encoding
@@ -28,7 +56,7 @@ func TestIocNumbers(t *testing.T) {
 		{"SUBVOL_CREATE_V2", BTRFS_IOC_SUBVOL_CREATE_V2, 0x50009418},
 		{"SUBVOL_GETFLAGS", BTRFS_IOC_SUBVOL_GETFLAGS, 0x80089419},
 		{"SUBVOL_SETFLAGS", BTRFS_IOC_SUBVOL_SETFLAGS, 0x4008941a},
-		{"GET_SUBVOL_INFO", BTRFS_IOC_GET_SUBVOL_INFO, 0x81f8943c},
+		{"GET_SUBVOL_INFO", BTRFS_IOC_GET_SUBVOL_INFO, abiWant(0x81f8943c, 0x81e8943c)},
 		{"SYNC", BTRFS_IOC_SYNC, 0x9408},
 	} {
 		if want := kernelIOC(c.want); c.got != want {
@@ -49,7 +77,7 @@ func TestStructSizes(t *testing.T) {
 		{"btrfs_ioctl_vol_args", unsafe.Sizeof(btrfsIoctlVolArgs{}), 4096},
 		{"btrfs_ioctl_vol_args_v2", unsafe.Sizeof(btrfsIoctlVolArgsV2{}), 4096},
 		{"btrfs_ioctl_ino_lookup_args", unsafe.Sizeof(btrfsIoctlInoLookupArgs{}), 4096},
-		{"btrfs_ioctl_get_subvol_info_args", unsafe.Sizeof(btrfsIoctlGetSubvolInfoArgs{}), 504},
+		{"btrfs_ioctl_get_subvol_info_args", unsafe.Sizeof(btrfsIoctlGetSubvolInfoArgs{}), abiWant(504, 488)},
 	} {
 		if c.got != c.want {
 			t.Errorf("sizeof(%s) = %d, want %d", c.name, c.got, c.want)

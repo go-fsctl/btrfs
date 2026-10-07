@@ -350,6 +350,14 @@ func TestSync(t *testing.T) {
 	}
 }
 
+// setStatfsType stores the filesystem magic m in a Statfs_t.Type field, whose
+// type depends on the architecture: int64 on most 64-bit ones, uint32 on
+// s390x, and int32 on 386, arm, mips and mipsle. The untyped constant
+// BTRFS_SUPER_MAGIC (0x9123683e) overflows int32, so assigning it directly
+// does not compile there; converting a uint32 VARIABLE wraps it to the same
+// bit pattern the kernel stores, which is what Available compares.
+func setStatfsType[T int32 | int64 | uint32](p *T, m uint32) { *p = T(m) }
+
 func TestAvailable(t *testing.T) {
 	defer snapshotSeams()()
 	unixStatfs = func(string, *unix.Statfs_t) error { return errInjected }
@@ -357,9 +365,7 @@ func TestAvailable(t *testing.T) {
 		t.Fatal("want false on statfs error")
 	}
 	unixStatfs = func(_ string, st *unix.Statfs_t) error {
-		// st.Type is int64 on most arches but uint32 on s390x; assigning the
-		// untyped constant directly lets it convert to whichever the arch uses.
-		st.Type = unix.BTRFS_SUPER_MAGIC
+		setStatfsType(&st.Type, unix.BTRFS_SUPER_MAGIC)
 		return nil
 	}
 	if !Available("p") {
